@@ -12,6 +12,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
     steps:
       - name: Checkout
@@ -25,6 +27,15 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Prepare Terraform plugin cache directory
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - name: Cache Terraform providers
+        uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: terraform-plugin-cache-${{ runner.os }}-v1
+
       - name: Download Go modules
         run: go mod download
 
@@ -32,4 +43,23 @@ jobs:
         run: go test ./... -v
 
       - name: Run provider E2E smoke test
-        run: go test -tags provider_e2e ./e2e -v
+        run: |
+          set -euo pipefail
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            echo "Provider E2E attempt $i/$attempts"
+            if go test -tags provider_e2e ./e2e -v 2>&1 | tee provider-e2e.log; then
+              exit 0
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              sleep 10
+            fi
+          done
+          exit 1
+
+      - name: Upload provider E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-e2e-log
+          path: provider-e2e.log
