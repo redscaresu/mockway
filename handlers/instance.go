@@ -6,6 +6,53 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func (app *Application) ListProductsServers(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"servers": map[string]any{
+			"DEV1-S": map[string]any{
+				"monthly_price":      11.99,
+				"hourly_price":       0.018,
+				"ncpus":              2,
+				"ram":                2147483648,
+				"arch":               "x86_64",
+				"volumes_constraint": map[string]any{"min_size": 10000000000, "max_size": 20000000000},
+			},
+			"DEV1-M": map[string]any{
+				"monthly_price":      23.99,
+				"hourly_price":       0.036,
+				"ncpus":              3,
+				"ram":                4294967296,
+				"arch":               "x86_64",
+				"volumes_constraint": map[string]any{"min_size": 10000000000, "max_size": 40000000000},
+			},
+			"GP1-XS": map[string]any{
+				"monthly_price":      39.99,
+				"hourly_price":       0.06,
+				"ncpus":              4,
+				"ram":                8589934592,
+				"arch":               "x86_64",
+				"volumes_constraint": map[string]any{"min_size": 20000000000, "max_size": 150000000000},
+			},
+			"GP1-S": map[string]any{
+				"monthly_price":      59.99,
+				"hourly_price":       0.09,
+				"ncpus":              8,
+				"ram":                17179869184,
+				"arch":               "x86_64",
+				"volumes_constraint": map[string]any{"min_size": 20000000000, "max_size": 300000000000},
+			},
+			"GP1-M": map[string]any{
+				"monthly_price":      119.99,
+				"hourly_price":       0.18,
+				"ncpus":              16,
+				"ram":                34359738368,
+				"arch":               "x86_64",
+				"volumes_constraint": map[string]any{"min_size": 50000000000, "max_size": 600000000000},
+			},
+		},
+	})
+}
+
 func (app *Application) CreateServer(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
