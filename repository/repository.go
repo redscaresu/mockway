@@ -465,6 +465,31 @@ func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[s
 	return next, nil
 }
 
+func (r *Repository) SetSecurityGroupRules(id string, rules any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_security_groups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	next["rules"] = rules
+	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) GetSecurityGroupRules(id string) ([]any, error) {
+	current, err := r.getJSONByID("instance_security_groups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	rules, ok := current["rules"].([]any)
+	if !ok {
+		return []any{}, nil
+	}
+	return rules, nil
+}
+
 func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
 	now := nowRFC3339()

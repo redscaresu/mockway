@@ -24,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-6 services + 1 legacy alias, 19 resource types. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update); IAM has an additional rules list endpoint. ~82 handler methods + 3 admin endpoints. No S3 in v1.
+6 services + 1 legacy alias, 19 resource types. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint. ~84 handler methods + 3 admin endpoints. No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -38,7 +38,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update) — the provider uses this to set inbound/outbound rules after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -54,6 +54,7 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | GET/DELETE | `/instance/v1/zones/{zone}/ips/{ip_id}` | Get/Delete IP |
 | POST/GET | `/instance/v1/zones/{zone}/security_groups` | Create/List security groups |
 | GET/PATCH/DELETE | `/instance/v1/zones/{zone}/security_groups/{sg_id}` | Get/Update/Delete security group |
+| PUT/GET | `/instance/v1/zones/{zone}/security_groups/{sg_id}/rules` | Set/List security group rules |
 | POST/GET | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics` | Create/List private NICs |
 | GET/DELETE | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{nic_id}` | Get/Delete private NIC |
 | POST/GET | `/vpc/v1/regions/{region}/vpcs` | Create/List VPCs |
@@ -216,6 +217,8 @@ func (app *Application) RegisterRoutes(r chi.Router) {
             r.Get("/security_groups", app.ListSecurityGroups)
             r.Get("/security_groups/{sg_id}", app.GetSecurityGroup)
             r.Patch("/security_groups/{sg_id}", app.UpdateSecurityGroup)
+            r.Put("/security_groups/{sg_id}/rules", app.SetSecurityGroupRules)
+            r.Get("/security_groups/{sg_id}/rules", app.GetSecurityGroupRules)
             r.Delete("/security_groups/{sg_id}", app.DeleteSecurityGroup)
 
             r.Post("/servers/{server_id}/private_nics", app.CreatePrivateNIC)
@@ -806,21 +809,23 @@ func TestInstanceServerLifecycle(t *testing.T) {
     ts, cleanup := testutil.NewTestServer(t)
     defer cleanup()
 
-    // Create
+    // Create — Instance API wraps response in "server" key
     status, body := testutil.DoCreate(t, ts,
         "/instance/v1/zones/fr-par-1/servers",
         map[string]any{"name": "web-1", "commercial_type": "DEV1-S"},
     )
     require.Equal(t, 200, status)
-    serverID := body["id"].(string)
+    server := body["server"].(map[string]any)
+    serverID := server["id"].(string)
     require.NotEmpty(t, serverID)
 
-    // Get
+    // Get — also wrapped
     status, body = testutil.DoGet(t, ts,
         "/instance/v1/zones/fr-par-1/servers/"+serverID,
     )
     require.Equal(t, 200, status)
-    require.Equal(t, "web-1", body["name"])
+    server = body["server"].(map[string]any)
+    require.Equal(t, "web-1", server["name"])
 
     // List
     status, body = testutil.DoList(t, ts,
@@ -855,14 +860,16 @@ func TestCrossServiceFlow(t *testing.T) {
         "/vpc/v1/regions/fr-par/private-networks",
         map[string]any{"name": "app-net", "vpc_id": vpc["id"]},
     )
-    _, srv := testutil.DoCreate(t, ts,
+    _, srvBody := testutil.DoCreate(t, ts,
         "/instance/v1/zones/fr-par-1/servers",
         map[string]any{"name": "web-1", "commercial_type": "DEV1-S"},
     )
-    _, nic := testutil.DoCreate(t, ts,
+    srv := srvBody["server"].(map[string]any)
+    _, nicBody := testutil.DoCreate(t, ts,
         "/instance/v1/zones/fr-par-1/servers/"+srv["id"].(string)+"/private_nics",
         map[string]any{"private_network_id": pn["id"]},
     )
+    nic := nicBody["private_nic"].(map[string]any)
 
     // Verify via admin state
     state := testutil.GetState(t, ts)
@@ -1148,24 +1155,22 @@ writeJSON(w, http.StatusOK, map[string]any{"server": out})
 writeJSON(w, http.StatusOK, out)
 ```
 
+**Checklist for adding new endpoints** (prevents flat-vs-wrapped bugs):
+
+1. Check the wrapping reference table above — is this an Instance API resource?
+2. If **Instance**: wrap Create/Get responses in the singular key (e.g., `{"server": out}`). Sub-resource endpoints (e.g., `/rules`) return their own shape, not the parent wrapper.
+3. If **any other API**: return the object flat (`out` directly).
+4. For **List** responses on any API: always use `writeList(w, "<key>", items)` with the exact plural key from the table.
+5. In tests: Instance Create/Get responses must be unwrapped (via `unwrapInstanceResource` or direct key access like `body["server"].(map[string]any)`). Non-Instance responses are accessed flat (`body["id"]`).
+6. When in doubt: check how the real Scaleway provider deserializes the response — it uses typed Go structs with `json:"server"` tags. If the JSON shape doesn't match the struct, the provider panics.
+
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
 
-## Pending Fixes
-
-These are missing endpoints that the Scaleway provider requires during `tofu apply` / `terraform apply`.
-
-1. **Security group PATCH**: The provider sends `PATCH /instance/v1/zones/{zone}/security_groups/{sg_id}` to update inbound/outbound rules after creation. Mockway currently returns 405 Method Not Allowed. Needs: implementation in actual codebase — handler (`UpdateSecurityGroup`) that merges PATCH body into existing resource (wrapped response: `{"security_group": {...}}`), repository `UpdateSecurityGroup` method. Tests required:
-   - PATCH returns 200 with updated fields merged into existing resource
-   - PATCH on non-existent ID returns 404
-   - GET after PATCH reflects the updated fields
-
-2. **IAM policy rules list**: The provider sends `GET /iam/v1alpha1/rules?policy_id={id}` to list a policy's rules after creation. Mockway currently returns 404. Needs: implementation in actual codebase — handler (`ListIAMRules`) that returns `{"rules": [], "total_count": 0}` (empty list is sufficient — Mockway doesn't model individual rules). Tests required:
-   - GET `/iam/v1alpha1/rules?policy_id={id}` returns 200 with `{"rules": [], "total_count": 0}`
-   - GET `/iam/v1alpha1/rules` without `policy_id` returns 200 with empty list
-
 ## Known Limitations
+
+- **IAM rules stub**: `ListIAMRules` always returns an empty list regardless of `policy_id` — Mockway doesn't model individual rules. If the provider sends an invalid `policy_id`, it still gets 200 instead of 404. Acceptable for v1.
 
 - **No state persistence across runs**: `tofu plan` / `terraform plan` against Mockway always shows all resources as "to be created" because Mockway starts with empty state (`:memory:` default). This is expected — each run is a clean environment. Use `--db ./mockway.db` for file-backed persistence if needed between runs.
 - **Plan does not strictly require Mockway**: For all-new resources (no existing state, no data sources), the Scaleway provider computes the plan locally without making API calls. `tofu plan` / `terraform plan` works with just dummy env vars (`SCW_API_URL=http://localhost:1`) and no running server. However, Mockway supports both plan and apply — point `SCW_API_URL` at Mockway for the full workflow (`tofu plan` → `tofu apply` / `terraform plan` → `terraform apply`).

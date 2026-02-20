@@ -42,6 +42,8 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/security_groups", app.ListSecurityGroups)
 			r.Get("/security_groups/{sg_id}", app.GetSecurityGroup)
 			r.Patch("/security_groups/{sg_id}", app.UpdateSecurityGroup)
+			r.Put("/security_groups/{sg_id}/rules", app.SetSecurityGroupRules)
+			r.Get("/security_groups/{sg_id}/rules", app.GetSecurityGroupRules)
 			r.Delete("/security_groups/{sg_id}", app.DeleteSecurityGroup)
 
 			r.Post("/servers/{server_id}/private_nics", app.CreatePrivateNIC)

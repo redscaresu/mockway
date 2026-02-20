@@ -155,6 +155,114 @@ func TestSecurityGroupPatchNotFound(t *testing.T) {
 	require.Equal(t, "resource not found", body["message"])
 }
 
+func TestSecurityGroupRulesPutLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups",
+		map[string]any{"name": "sg"},
+	)
+	require.Equal(t, 200, status)
+	sgID := resourceID(created)
+
+	rules := []any{
+		map[string]any{"action": "accept", "protocol": "TCP", "dest_port_from": 80},
+	}
+	status, body := doPut(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups/"+sgID+"/rules",
+		map[string]any{"rules": rules},
+	)
+	require.Equal(t, 200, status)
+	gotRules := body["rules"].([]any)
+	require.Len(t, gotRules, 1)
+	gotRule := gotRules[0].(map[string]any)
+	require.Equal(t, "accept", gotRule["action"])
+	require.Equal(t, "TCP", gotRule["protocol"])
+	require.Equal(t, float64(80), gotRule["dest_port_from"])
+
+	status, got := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/security_groups/"+sgID)
+	require.Equal(t, 200, status)
+	sg := unwrapInstanceResource(got)
+	gotRules = sg["rules"].([]any)
+	require.Len(t, gotRules, 1)
+	gotRule = gotRules[0].(map[string]any)
+	require.Equal(t, "accept", gotRule["action"])
+	require.Equal(t, "TCP", gotRule["protocol"])
+	require.Equal(t, float64(80), gotRule["dest_port_from"])
+}
+
+func TestSecurityGroupRulesPutNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := doPut(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups/non-existent/rules",
+		map[string]any{"rules": []any{}},
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "resource not found", body["message"])
+}
+
+func TestSecurityGroupRulesGetAfterPut(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups",
+		map[string]any{"name": "sg"},
+	)
+	require.Equal(t, 200, status)
+	sgID := resourceID(created)
+
+	rules := []any{
+		map[string]any{"action": "accept", "protocol": "TCP", "dest_port_from": 443},
+	}
+	status, _ = doPut(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups/"+sgID+"/rules",
+		map[string]any{"rules": rules},
+	)
+	require.Equal(t, 200, status)
+
+	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/security_groups/"+sgID+"/rules?page=1")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), body["total_count"])
+	gotRules := body["rules"].([]any)
+	require.Len(t, gotRules, 1)
+	gotRule := gotRules[0].(map[string]any)
+	require.Equal(t, "accept", gotRule["action"])
+	require.Equal(t, "TCP", gotRule["protocol"])
+	require.Equal(t, float64(443), gotRule["dest_port_from"])
+}
+
+func TestSecurityGroupRulesGetEmptyWhenUnset(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups",
+		map[string]any{"name": "sg"},
+	)
+	require.Equal(t, 200, status)
+	sgID := resourceID(created)
+
+	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/security_groups/"+sgID+"/rules")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
+	require.Len(t, body["rules"].([]any), 0)
+}
+
+func TestSecurityGroupRulesGetNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/security_groups/non-existent/rules")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "resource not found", body["message"])
+}
+
 func TestDeleteConflictForMultipleDependencies(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -825,6 +933,29 @@ func doPatch(t *testing.T, ts *httptest.Server, path string, body any) (int, map
 	require.NoError(t, err)
 
 	req, err := http.NewRequest(http.MethodPatch, ts.URL+path, bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Auth-Token", "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	out := map[string]any{}
+	if resp.StatusCode != http.StatusNoContent {
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		require.NoError(t, err)
+	}
+	return resp.StatusCode, out
+}
+
+func doPut(t *testing.T, ts *httptest.Server, path string, body any) (int, map[string]any) {
+	t.Helper()
+
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPut, ts.URL+path, bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Auth-Token", "test-token")

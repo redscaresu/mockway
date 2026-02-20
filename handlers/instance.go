@@ -141,6 +141,35 @@ func (app *Application) UpdateSecurityGroup(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"security_group": out})
 }
 
+func (app *Application) SetSecurityGroupRules(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	rules, ok := body["rules"]
+	if !ok {
+		rules = body
+	}
+	if _, err := app.repo.SetSecurityGroupRules(chi.URLParam(r, "sg_id"), rules); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+}
+
+func (app *Application) GetSecurityGroupRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := app.repo.GetSecurityGroupRules(chi.URLParam(r, "sg_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rules":       rules,
+		"total_count": len(rules),
+	})
+}
+
 func (app *Application) CreatePrivateNIC(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
