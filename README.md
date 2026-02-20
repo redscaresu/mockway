@@ -1,5 +1,5 @@
 # mockway
-Stateful local mock of the Scaleway API for offline OpenTofu/Terraform testing.
+Stateful local mock of the Scaleway API for offline OpenTofu and Terraform testing.
 
 Mockway runs as a single Go binary, persists resource state in SQLite, and exposes Scaleway-like API routes on one port.
 
@@ -47,9 +47,24 @@ export SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000
 export SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000
 ```
 
-Then run:
+Then run either:
 ```bash
 tofu plan
+```
+or:
+```bash
+terraform plan
+```
+
+Typical workflow for either CLI:
+```bash
+# OpenTofu
+tofu init
+tofu plan
+
+# Terraform
+terraform init
+terraform plan
 ```
 
 ## Auth
