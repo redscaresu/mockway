@@ -167,7 +167,7 @@ mockway/
 **Key pattern** (from simpleAPI): dependency injection via `Application` struct:
 
 ```go
-// cmd/mockway/main.go — TARGET STATE (catch-all wiring is pending, see Pending Fixes)
+// cmd/mockway/main.go
 func run() error {
     port := flag.Int("port", 8080, "HTTP port")
     dbPath := flag.String("db", ":memory:", "SQLite database path")
@@ -191,7 +191,7 @@ func run() error {
     return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
 
-// handlers/handlers.go — TARGET STATE (ListProductsServers is pending, see Pending Fixes)
+// handlers/handlers.go
 type Application struct {
     repo *repository.Repository
 }
@@ -1195,18 +1195,6 @@ writeJSON(w, http.StatusOK, out)
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
-
-## Pending Fixes
-
-1. **Instance products/servers catalog**: The provider sends `GET /instance/v1/zones/{zone}/products/servers?page=1` to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Mockway currently returns 404. Needs: a `ListProductsServers` handler that returns a static catalog of common server types. The response shape is `{"servers": {"DEV1-S": {...}, "DEV1-M": {...}, ...}}` — a map keyed by commercial type, not an array. Include at least: `DEV1-S`, `DEV1-M`, `GP1-S`, `GP1-M`, `GP1-XS`. Each entry needs `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch` (e.g., `"x86_64"`), and `volumes_constraint` fields. Exact values don't matter for mock — use plausible numbers. Tests required:
-   - GET returns 200 with `{"servers": {...}}` containing known types like `DEV1-S`
-   - Each server type entry has required fields (`ncpus`, `ram`, `arch`)
-   - `?page=1` query param is accepted and ignored (same response)
-
-2. **Catch-all unimplemented route handler**: Register `UnimplementedHandler` as `r.NotFound` and `r.MethodNotAllowed` on the chi router. Returns 501 with `{"message": "not implemented: METHOD /path", "type": "not_implemented"}` and logs `UNIMPLEMENTED: METHOD /full-url` to stdout. Tests required:
-   - GET to a completely unknown path returns 501 with `type: "not_implemented"`
-   - POST to a path that only supports GET returns 501 (method not allowed → caught by catch-all)
-   - Response body includes the method and path in the message
 
 ## Known Limitations
 
