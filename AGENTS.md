@@ -24,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-6 services + 1 legacy alias, 19 resource types + 1 catalog endpoint. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint; Instance has a products/servers catalog endpoint. ~85 handler methods + 3 admin endpoints + 1 catch-all (UnimplementedHandler). No S3 in v1.
+7 services + 1 legacy alias, 19 resource types + 1 catalog endpoint + 2 marketplace endpoints. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint; Instance has a products/servers catalog endpoint; Marketplace has list and get endpoints for image label resolution. ~87 handler methods + 3 admin endpoints + 1 catch-all (UnimplementedHandler). No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -34,11 +34,12 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 | Kubernetes | `/k8s/v1/regions/{region}/` | clusters, pools |
 | RDB | `/rdb/v1/regions/{region}/` | instances, databases, users |
 | IAM | `/iam/v1alpha1/` | applications, api-keys, policies, ssh-keys |
+| Marketplace | `/marketplace/v2/` | local-images (image label → zone-specific UUID resolution) |
 | Account (legacy) | `/account/v2alpha1/` | ssh-keys (alias → IAM ssh-keys state) |
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both are required — see Pending Fixes if `per_volume_constraint` is not yet implemented.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both are implemented. Marketplace has 2 endpoints for image label resolution: `GET /marketplace/v2/local-images` (list, filtered by `image_label`, `zone`, `type` query params) and `GET /marketplace/v2/local-images/{local_image_id}` (get by ID). The provider calls these to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without these, the provider can't resolve non-UUID image references and server creation fails.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -89,6 +90,8 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | GET | `/iam/v1alpha1/rules` | List IAM rules (filtered by `policy_id` query param) |
 | POST/GET | `/iam/v1alpha1/ssh-keys` | Create/List SSH keys |
 | GET/DELETE | `/iam/v1alpha1/ssh-keys/{ssh_key_id}` | Get/Delete SSH key |
+| GET | `/marketplace/v2/local-images` | List local images (filter by `image_label`, `zone`, `type`) |
+| GET | `/marketplace/v2/local-images/{local_image_id}` | Get local image by ID |
 | POST/GET | `/account/v2alpha1/ssh-keys` | Create/List SSH keys (legacy alias → IAM ssh-keys) |
 | GET/DELETE | `/account/v2alpha1/ssh-keys/{ssh_key_id}` | Get/Delete SSH key (legacy alias → IAM ssh-keys) |
 
@@ -145,6 +148,7 @@ mockway/
 │   ├── k8s.go                    # Kubernetes handlers (clusters, pools)
 │   ├── rdb.go                    # RDB handlers (instances, databases, users)
 │   ├── iam.go                    # IAM handlers (applications, api_keys, policies, ssh_keys)
+│   ├── marketplace.go            # Marketplace handlers (local-images for image label resolution)
 │   ├── admin.go                  # /mock/reset, /mock/state handlers
 │   └── handlers_test.go          # Integration tests (HTTP round-trips)
 ├── models/
@@ -318,6 +322,12 @@ func (app *Application) RegisterRoutes(r chi.Router) {
             r.Get("/ssh-keys", app.ListIAMSSHKeys)
             r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
             r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
+        })
+
+        // Marketplace (image label → UUID resolution)
+        r.Route("/marketplace/v2", func(r chi.Router) {
+            r.Get("/local-images", app.ListMarketplaceLocalImages)
+            r.Get("/local-images/{local_image_id}", app.GetMarketplaceLocalImage)
         })
 
         // Account (legacy alias — same handlers as IAM SSH keys)
@@ -1199,15 +1209,56 @@ Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except 
 
 ## Pending Fixes
 
-1. **Products/servers `per_volume_constraint`**: `volumes_constraint` (with `min_size` and `max_size`) is already implemented. What's still missing: each server type entry also needs a `per_volume_constraint` field with an `l_ssd` sub-object containing `min_size` and `max_size`. Without this, the provider can't determine that the server type supports local SSD volumes — the root volume gets typed as block SSD, the local volume total becomes 0, and validation fails against `volumes_constraint.min_size`. Example for DEV1-S:
+1. **Marketplace local-images endpoints**: The provider calls `GET /marketplace/v2/local-images` to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without this, non-UUID image references fail. Two endpoints needed:
+
+   **`GET /marketplace/v2/local-images`** — List local images, filtered by query params:
+   - `image_label` — e.g., `ubuntu_noble` (provider normalises hyphens to underscores)
+   - `zone` — e.g., `fr-par-1`
+   - `type` — `instance_local` or `instance_sbs` (derived from volume type: `l_ssd`/`b_ssd` → `instance_local`, `sbs_volume` or default → `instance_sbs`)
+   - `page`, `page_size`, `order_by` — pagination (Mockway can ignore, return all in one page)
+
+   Response shape:
    ```json
-   "per_volume_constraint": {
-     "l_ssd": {"min_size": 1000000000, "max_size": 20000000000}
+   {
+     "local_images": [
+       {
+         "id": "<uuid>",
+         "compatible_commercial_types": ["DEV1-S", "DEV1-M", "DEV1-L", "GP1-XS", "GP1-S", "GP1-M"],
+         "arch": "x86_64",
+         "zone": "fr-par-1",
+         "label": "ubuntu_noble",
+         "type": "instance_sbs"
+       }
+     ],
+     "total_count": 1
    }
    ```
-   Tests required:
-   - Each server type entry contains `per_volume_constraint` with `l_ssd` sub-object
-   - `l_ssd` has both `min_size` and `max_size`
+
+   The `compatible_commercial_types` field is critical — the SDK iterates the list and checks if the uppercased commercial type is present. If not, resolution fails even if the label matches.
+
+   **Implementation approach**: Static catalog (like products/servers). Return a hardcoded set of common image labels (`ubuntu_noble`, `ubuntu_jammy`, `debian_bookworm`, `centos_stream_9`). Each entry covers all supported commercial types and both `instance_local` and `instance_sbs` types. Filter by query params. Generate deterministic UUIDs per (label, zone, type) combination so the same query always returns the same image UUID.
+
+   **`GET /marketplace/v2/local-images/{local_image_id}`** — Get a single local image by its UUID. Called during plan diffs when the provider compares a server's current image to the user-specified label. Response shape is the same object from the list (without the array wrapper):
+   ```json
+   {
+     "id": "<uuid>",
+     "compatible_commercial_types": ["DEV1-S", "DEV1-M", ...],
+     "arch": "x86_64",
+     "zone": "fr-par-1",
+     "label": "ubuntu_noble",
+     "type": "instance_sbs"
+   }
+   ```
+
+   Returns 404 if the ID doesn't match any known image.
+
+   **Tests required**:
+   - List with `image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs` returns 200 with matching entry
+   - List entry has `compatible_commercial_types` containing `DEV1-S`
+   - List with unknown label returns 200 with empty `local_images` array
+   - Get by ID returns 200 with correct label and zone
+   - Get with unknown ID returns 404
+   - Pagination params (`page=1`) accepted and ignored
 
 ## Known Limitations
 
