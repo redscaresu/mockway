@@ -200,23 +200,108 @@ func (app *Application) RegisterRoutes(r chi.Router) {
     // Scaleway API routes — require X-Auth-Token
     r.Group(func(r chi.Router) {
         r.Use(app.requireAuthToken)
-        // Instance
         r.Route("/instance/v1/zones/{zone}", func(r chi.Router) {
             r.Post("/servers", app.CreateServer)
             r.Get("/servers", app.ListServers)
             r.Get("/servers/{server_id}", app.GetServer)
             r.Delete("/servers/{server_id}", app.DeleteServer)
-            // ... ips, security_groups, private_nics
-        })
-        // VPC, LB, K8s, RDB routes...
 
-        // IAM (organisation-scoped — no zone/region)
+            r.Post("/ips", app.CreateIP)
+            r.Get("/ips", app.ListIPs)
+            r.Get("/ips/{ip_id}", app.GetIP)
+            r.Delete("/ips/{ip_id}", app.DeleteIP)
+
+            r.Post("/security_groups", app.CreateSecurityGroup)
+            r.Get("/security_groups", app.ListSecurityGroups)
+            r.Get("/security_groups/{sg_id}", app.GetSecurityGroup)
+            r.Delete("/security_groups/{sg_id}", app.DeleteSecurityGroup)
+
+            r.Post("/servers/{server_id}/private_nics", app.CreatePrivateNIC)
+            r.Get("/servers/{server_id}/private_nics", app.ListPrivateNICs)
+            r.Get("/servers/{server_id}/private_nics/{nic_id}", app.GetPrivateNIC)
+            r.Delete("/servers/{server_id}/private_nics/{nic_id}", app.DeletePrivateNIC)
+        })
+
+        r.Route("/vpc/v1/regions/{region}", func(r chi.Router) {
+            r.Post("/vpcs", app.CreateVPC)
+            r.Get("/vpcs", app.ListVPCs)
+            r.Get("/vpcs/{vpc_id}", app.GetVPC)
+            r.Delete("/vpcs/{vpc_id}", app.DeleteVPC)
+
+            r.Post("/private-networks", app.CreatePrivateNetwork)
+            r.Get("/private-networks", app.ListPrivateNetworks)
+            r.Get("/private-networks/{pn_id}", app.GetPrivateNetwork)
+            r.Delete("/private-networks/{pn_id}", app.DeletePrivateNetwork)
+        })
+
+        r.Route("/lb/v1/zones/{zone}", func(r chi.Router) {
+            r.Post("/lbs", app.CreateLB)
+            r.Get("/lbs", app.ListLBs)
+            r.Get("/lbs/{lb_id}", app.GetLB)
+            r.Delete("/lbs/{lb_id}", app.DeleteLB)
+
+            r.Post("/frontends", app.CreateFrontend)
+            r.Get("/frontends", app.ListFrontends)
+            r.Get("/frontends/{frontend_id}", app.GetFrontend)
+            r.Delete("/frontends/{frontend_id}", app.DeleteFrontend)
+
+            r.Post("/backends", app.CreateBackend)
+            r.Get("/backends", app.ListBackends)
+            r.Get("/backends/{backend_id}", app.GetBackend)
+            r.Delete("/backends/{backend_id}", app.DeleteBackend)
+
+            r.Post("/lbs/{lb_id}/private-networks", app.AttachLBPrivateNetwork)
+            r.Get("/lbs/{lb_id}/private-networks", app.ListLBPrivateNetworks)
+            r.Delete("/lbs/{lb_id}/private-networks/{pn_id}", app.DeleteLBPrivateNetwork)
+        })
+
+        r.Route("/k8s/v1/regions/{region}", func(r chi.Router) {
+            r.Post("/clusters", app.CreateCluster)
+            r.Get("/clusters", app.ListClusters)
+            r.Get("/clusters/{cluster_id}", app.GetCluster)
+            r.Delete("/clusters/{cluster_id}", app.DeleteCluster)
+
+            r.Post("/clusters/{cluster_id}/pools", app.CreatePool)
+            r.Get("/clusters/{cluster_id}/pools", app.ListPools)
+            r.Get("/pools/{pool_id}", app.GetPool)
+            r.Delete("/pools/{pool_id}", app.DeletePool)
+        })
+
+        r.Route("/rdb/v1/regions/{region}", func(r chi.Router) {
+            r.Post("/instances", app.CreateRDBInstance)
+            r.Get("/instances", app.ListRDBInstances)
+            r.Get("/instances/{instance_id}", app.GetRDBInstance)
+            r.Delete("/instances/{instance_id}", app.DeleteRDBInstance)
+
+            r.Post("/instances/{instance_id}/databases", app.CreateRDBDatabase)
+            r.Get("/instances/{instance_id}/databases", app.ListRDBDatabases)
+            r.Delete("/instances/{instance_id}/databases/{db_name}", app.DeleteRDBDatabase)
+
+            r.Post("/instances/{instance_id}/users", app.CreateRDBUser)
+            r.Get("/instances/{instance_id}/users", app.ListRDBUsers)
+            r.Delete("/instances/{instance_id}/users/{user_name}", app.DeleteRDBUser)
+        })
+
         r.Route("/iam/v1alpha1", func(r chi.Router) {
             r.Post("/applications", app.CreateIAMApplication)
             r.Get("/applications", app.ListIAMApplications)
             r.Get("/applications/{application_id}", app.GetIAMApplication)
             r.Delete("/applications/{application_id}", app.DeleteIAMApplication)
-            // ... api-keys, policies, ssh-keys
+
+            r.Post("/api-keys", app.CreateIAMAPIKey)
+            r.Get("/api-keys", app.ListIAMAPIKeys)
+            r.Get("/api-keys/{access_key}", app.GetIAMAPIKey)
+            r.Delete("/api-keys/{access_key}", app.DeleteIAMAPIKey)
+
+            r.Post("/policies", app.CreateIAMPolicy)
+            r.Get("/policies", app.ListIAMPolicies)
+            r.Get("/policies/{policy_id}", app.GetIAMPolicy)
+            r.Delete("/policies/{policy_id}", app.DeleteIAMPolicy)
+
+            r.Post("/ssh-keys", app.CreateIAMSSHKey)
+            r.Get("/ssh-keys", app.ListIAMSSHKeys)
+            r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
+            r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
         })
 
         // Account (legacy alias — same handlers as IAM SSH keys)
@@ -372,7 +457,7 @@ The JSON `data` column holds the full API response shape — flexible, no migrat
 3. Inject `id` + server-generated fields into the JSON (see table below)
 4. Extract FK fields (e.g., `vpc_id`, `server_id`) from JSON into dedicated columns for SQLite FK enforcement
 5. Store the full enriched JSON in the `data` column
-6. Return the `data` JSON as the response body (200 OK)
+6. Return the response body (200 OK) — **Instance API**: wrap in a key (e.g., `{"server": {...}}`); **all other APIs**: return the flat object directly (see Response Wrapping below)
 
 **Server-generated fields injected on create**:
 
@@ -418,7 +503,8 @@ In both cases, `init_endpoints` is **not** stored — it's consumed on create an
 
 **Data flow for Get/List**:
 1. Query the `data` column from SQLite
-2. Return it directly as the response body — no transformation needed
+2. For Get: **Instance API** — wrap in a key (e.g., `{"server": {...}}`); **all other APIs** — return the flat object directly
+3. For List: wrap in a plural key with `total_count` (all APIs — see Response Wrapping below)
 
 **Exception**: IAM API keys. The `secret_key` is stored in the `data` blob (so create can return it) but must be **stripped** before returning from Get and List. Parse the JSON, delete the `"secret_key"` key, return the rest. All other fields (including `user_id` or `application_id`) are returned unchanged. This is the only Get/List transformation in Mockway.
 
@@ -803,6 +889,146 @@ func TestFKRejectionHTTP(t *testing.T) {
 }
 ```
 
+### Response Shape Conformance Tests (`handlers/handlers_test.go`)
+
+Table-driven tests that validate every endpoint returns the correct response structure. These prevent regressions where Mockway's response format drifts from the real Scaleway API (e.g., missing wrapper keys, wrong list key names).
+
+**Why**: The Scaleway provider deserializes responses into typed structs. If the JSON shape is wrong (e.g., flat `{"id": "..."}` instead of wrapped `{"server": {"id": "..."}}`), the provider panics with a nil dereference. These tests catch that class of bug at the unit level.
+
+**`TestCreateGetResponseWrapping`** — validates Create and Get responses have the correct wrapper structure:
+
+```go
+func TestCreateGetResponseWrapping(t *testing.T) {
+    type wrapCase struct {
+        name       string
+        setup      func(t *testing.T, ts *httptest.Server, ctx map[string]string)
+        createPath string
+        getPath    string
+        body       map[string]any
+        wrapKey    string // e.g. "server" for Instance, "" for flat
+        idField    string // field inside the resource object that holds the ID
+    }
+
+    cases := []wrapCase{
+        // Instance API — wrapped in a key
+        {name: "Server",        createPath: "/instance/v1/zones/{zone}/servers",         getPath: "/instance/v1/zones/{zone}/servers/{id}",         body: map[string]any{"name": "s"}, wrapKey: "server",         idField: "id"},
+        {name: "IP",            setup: setupServer, createPath: "/instance/v1/zones/{zone}/ips", getPath: "/instance/v1/zones/{zone}/ips/{id}",     body: map[string]any{"server_id": "{server_id}"}, wrapKey: "ip", idField: "id"},
+        {name: "SecurityGroup", createPath: "/instance/v1/zones/{zone}/security_groups", getPath: "/instance/v1/zones/{zone}/security_groups/{id}", body: map[string]any{"name": "sg"}, wrapKey: "security_group", idField: "id"},
+        {name: "PrivateNIC",    setup: setupServerAndPN, createPath: "/instance/v1/zones/{zone}/servers/{server_id}/private_nics", getPath: "/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{id}", body: map[string]any{"private_network_id": "{pn_id}"}, wrapKey: "private_nic", idField: "id"},
+
+        // All other APIs — flat (no wrapper)
+        {name: "VPC",            createPath: "/vpc/v1/regions/{region}/vpcs",             getPath: "/vpc/v1/regions/{region}/vpcs/{id}",             body: map[string]any{"name": "v"}, wrapKey: "", idField: "id"},
+        {name: "PrivateNetwork", setup: setupVPC, createPath: "/vpc/v1/regions/{region}/private-networks", getPath: "/vpc/v1/regions/{region}/private-networks/{id}", body: map[string]any{"name": "pn", "vpc_id": "{vpc_id}"}, wrapKey: "", idField: "id"},
+        {name: "LB",             createPath: "/lb/v1/zones/{zone}/lbs",                  getPath: "/lb/v1/zones/{zone}/lbs/{id}",                   body: map[string]any{"name": "lb"}, wrapKey: "", idField: "id"},
+        {name: "Cluster",        createPath: "/k8s/v1/regions/{region}/clusters",         getPath: "/k8s/v1/regions/{region}/clusters/{id}",         body: map[string]any{"name": "k"}, wrapKey: "", idField: "id"},
+        {name: "RDBInstance",    createPath: "/rdb/v1/regions/{region}/instances",         getPath: "/rdb/v1/regions/{region}/instances/{id}",        body: map[string]any{"name": "db"}, wrapKey: "", idField: "id"},
+        {name: "IAMApplication", createPath: "/iam/v1alpha1/applications",                getPath: "/iam/v1alpha1/applications/{id}",                body: map[string]any{"name": "app"}, wrapKey: "", idField: "id"},
+        // ... remaining flat endpoints
+    }
+
+    for _, tt := range cases {
+        t.Run(tt.name, func(t *testing.T) {
+            ts, cleanup := testutil.NewTestServer(t)
+            defer cleanup()
+
+            ctx := map[string]string{"zone": "fr-par-1", "region": "fr-par"}
+            if tt.setup != nil {
+                tt.setup(t, ts, ctx)
+            }
+
+            // Create
+            status, raw := testutil.DoCreate(t, ts, pathWithCtx(tt.createPath, ctx), bodyWithCtx(tt.body, ctx))
+            require.Equal(t, 200, status)
+
+            if tt.wrapKey != "" {
+                // Wrapped: top-level must have wrapKey, resource inside it
+                inner, ok := raw[tt.wrapKey].(map[string]any)
+                require.True(t, ok, "expected wrapper key %q", tt.wrapKey)
+                require.NotEmpty(t, inner[tt.idField])
+                ctx["id"] = inner[tt.idField].(string)
+            } else {
+                // Flat: top-level has id directly
+                require.NotEmpty(t, raw[tt.idField])
+                ctx["id"] = raw[tt.idField].(string)
+            }
+
+            // Get
+            status, raw = testutil.DoGet(t, ts, pathWithCtx(tt.getPath, ctx))
+            require.Equal(t, 200, status)
+
+            if tt.wrapKey != "" {
+                inner, ok := raw[tt.wrapKey].(map[string]any)
+                require.True(t, ok, "expected wrapper key %q", tt.wrapKey)
+                require.Equal(t, ctx["id"], inner[tt.idField])
+            } else {
+                require.Equal(t, ctx["id"], raw[tt.idField])
+            }
+        })
+    }
+}
+```
+
+**`TestListResponseKeys`** — validates every List endpoint returns the correct plural key and `total_count`:
+
+```go
+func TestListResponseKeys(t *testing.T) {
+    type listCase struct {
+        name    string
+        setup   func(t *testing.T, ts *httptest.Server, ctx map[string]string)
+        path    string
+        listKey string // expected key for the array
+    }
+
+    cases := []listCase{
+        {name: "Servers",           path: "/instance/v1/zones/{zone}/servers",           listKey: "servers"},
+        {name: "IPs",               path: "/instance/v1/zones/{zone}/ips",               listKey: "ips"},
+        {name: "SecurityGroups",    path: "/instance/v1/zones/{zone}/security_groups",   listKey: "security_groups"},
+        {name: "VPCs",              path: "/vpc/v1/regions/{region}/vpcs",               listKey: "vpcs"},
+        {name: "PrivateNetworks",   path: "/vpc/v1/regions/{region}/private-networks",   listKey: "private_networks"},
+        {name: "LBs",               path: "/lb/v1/zones/{zone}/lbs",                    listKey: "lbs"},
+        {name: "Frontends",         path: "/lb/v1/zones/{zone}/frontends",              listKey: "frontends"},
+        {name: "Backends",          path: "/lb/v1/zones/{zone}/backends",               listKey: "backends"},
+        {name: "LBPrivateNetworks", setup: setupLB, path: "/lb/v1/zones/{zone}/lbs/{lb_id}/private-networks", listKey: "private_network"},
+        {name: "Clusters",          path: "/k8s/v1/regions/{region}/clusters",           listKey: "clusters"},
+        {name: "IAMApplications",   path: "/iam/v1alpha1/applications",                  listKey: "applications"},
+        {name: "IAMAPIKeys",        path: "/iam/v1alpha1/api-keys",                      listKey: "api_keys"},
+        {name: "IAMPolicies",       path: "/iam/v1alpha1/policies",                      listKey: "policies"},
+        {name: "IAMSSHKeys",        path: "/iam/v1alpha1/ssh-keys",                      listKey: "ssh_keys"},
+        // ... remaining list endpoints (pools, rdb databases/users require parent setup)
+    }
+
+    for _, tt := range cases {
+        t.Run(tt.name, func(t *testing.T) {
+            ts, cleanup := testutil.NewTestServer(t)
+            defer cleanup()
+
+            ctx := map[string]string{"zone": "fr-par-1", "region": "fr-par"}
+            if tt.setup != nil {
+                tt.setup(t, ts, ctx)
+            }
+
+            status, body := testutil.DoList(t, ts, pathWithCtx(tt.path, ctx))
+            require.Equal(t, 200, status)
+
+            _, hasKey := body[tt.listKey]
+            require.True(t, hasKey, "expected list key %q in response", tt.listKey)
+            require.IsType(t, []any{}, body[tt.listKey])
+
+            _, hasCount := body["total_count"]
+            require.True(t, hasCount, "expected total_count in response")
+        })
+    }
+}
+```
+
+**What these tests catch**:
+- Missing wrapper key on Instance Create/Get → test fails with `"expected wrapper key \"server\""`
+- Accidental wrapper on non-Instance Create/Get → test fails because `raw["id"]` is nil
+- Wrong list key name (e.g., `"private_networks"` instead of `"private_network"`) → test fails with `"expected list key \"private_network\""`
+- Missing `total_count` on any List response
+
+These tests use the same `pathWithCtx`, `bodyWithCtx`, and setup helpers as the existing table-driven lifecycle tests.
+
 ### What NOT to test
 
 - **Handler methods in isolation**: handlers are thin wrappers — integration tests cover them fully.
@@ -815,10 +1041,14 @@ Test files live alongside their source (Go convention):
 
 ```
 handlers/
+├── admin.go
 ├── handlers.go
+├── iam.go
 ├── instance.go
+├── k8s.go
+├── lb.go
+├── rdb.go
 ├── vpc.go
-├── ...
 └── handlers_test.go            # Integration tests (HTTP round-trips)
 repository/
 ├── repository.go
@@ -835,8 +1065,8 @@ Scaleway APIs return responses wrapped in a consistent format. Follow these patt
 
 | Operation | Success Code | Body |
 |-----------|-------------|------|
-| Create | `200 OK` | Created resource JSON |
-| Get | `200 OK` | Resource JSON |
+| Create | `200 OK` | Created resource JSON (Instance: wrapped in key; others: flat — see Response Wrapping) |
+| Get | `200 OK` | Resource JSON (Instance: wrapped in key; others: flat — see Response Wrapping) |
 | List | `200 OK` | `{"<plural_key>": [...], "total_count": N}` (e.g., `{"servers": [...], "total_count": 2}`) |
 | Delete | `204 No Content` | Empty |
 | `POST /mock/reset` | `204 No Content` | Empty |
@@ -853,23 +1083,83 @@ Scaleway APIs return responses wrapped in a consistent format. Follow these patt
 | Dependents exist (Delete) | `409 Conflict` | `{"message": "cannot delete: dependents exist", "type": "conflict"}` |
 | Duplicate composite key (Create) | `409 Conflict` | `{"message": "resource already exists", "type": "conflict"}` |
 
-**Single resource** (Create, Get):
+### Response Wrapping
+
+The Scaleway API has **two different patterns** for Create/Get responses depending on the service:
+
+1. **Instance API only**: wraps single-object responses in a key — e.g., `{"server": {"id": "...", ...}}`
+2. **All other APIs** (VPC, LB, K8s, RDB, IAM): returns the object directly at the top level — e.g., `{"id": "...", "name": "...", ...}`
+
+**List responses always use a wrapper** with a plural key and `total_count`, across all APIs.
+
+The Scaleway provider dereferences the wrapper key and will panic if it's missing. Mockway **must** match the real API's wrapping behavior exactly.
+
+**Wrapping reference**:
+
+| Resource Type | Singular Key (Create/Get) | Plural Key (List) |
+|---|---|---|
+| Instance Server | `"server"` | `"servers"` |
+| Instance IP | `"ip"` | `"ips"` |
+| Instance Security Group | `"security_group"` | `"security_groups"` |
+| Instance Private NIC | `"private_nic"` | `"private_nics"` |
+| VPC | _(flat — no wrapper)_ | `"vpcs"` |
+| Private Network | _(flat)_ | `"private_networks"` |
+| Load Balancer | _(flat)_ | `"lbs"` |
+| LB Frontend | _(flat)_ | `"frontends"` |
+| LB Backend | _(flat)_ | `"backends"` |
+| LB Private Network | _(flat)_ | `"private_network"` **(singular!)** |
+| K8s Cluster | _(flat)_ | `"clusters"` |
+| K8s Pool | _(flat)_ | `"pools"` |
+| RDB Instance | _(flat)_ | `"instances"` |
+| RDB Database | _(flat)_ | `"databases"` |
+| RDB User | _(flat)_ | `"users"` |
+| IAM Application | _(flat)_ | `"applications"` |
+| IAM API Key | _(flat)_ | `"api_keys"` |
+| IAM Policy | _(flat)_ | `"policies"` |
+| IAM SSH Key | _(flat)_ | `"ssh_keys"` |
+
+**Instance API example** (Create/Get):
 ```json
-{"id": "uuid", "name": "...", ...}
+{"server": {"id": "uuid", "name": "web-1", "state": "running", ...}}
 ```
 
-**List** (returns array under a pluralized key):
+**All other APIs example** (Create/Get):
+```json
+{"id": "uuid", "name": "main", "region": "fr-par", ...}
+```
+
+**List example** (all APIs):
 ```json
 {"servers": [...], "total_count": 2}
+```
+
+**LB Private Network list quirk**: uses the **singular** key `"private_network"` (not `"private_networks"`) for the array field. This is a Scaleway API inconsistency — follow it exactly.
+
+**Implementation note**: the `writeJSON` helper returns flat objects. For Instance resources, handlers must wrap before calling `writeJSON`:
+```go
+// Instance handlers — wrap in key
+writeJSON(w, http.StatusOK, map[string]any{"server": out})
+
+// All other handlers — return flat
+writeJSON(w, http.StatusOK, out)
 ```
 
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
 
+## Pending Fixes
+
+These are spec/code mismatches where AGENTS.md defines the target contract and code must be updated to match. Once fixed, the **Response Shape Conformance Tests** (see Testing section) prevent regressions.
+
+1. **Instance API response wrapping**: Instance Create/Get handlers currently return flat objects. They must wrap responses in a key to match the real Scaleway API (e.g., `{"server": {...}}`). The provider dereferences the wrapper key and panics when it's `nil`. Affected handlers: `CreateServer`, `GetServer`, `CreateIP`, `GetIP`, `CreateSecurityGroup`, `GetSecurityGroup`, `CreatePrivateNIC`, `GetPrivateNIC` in `handlers/instance.go`. See the Response Wrapping table for the exact keys. Covered by `TestCreateGetResponseWrapping`.
+
+2. **LB private-network list key**: `ListLBPrivateNetworks` in `handlers/lb.go` currently returns `"private_networks"` (plural). The real Scaleway API uses the **singular** key `"private_network"` for this list response. Must be changed to match. Covered by `TestListResponseKeys`.
+
 ## Known Limitations
 
 - **No state persistence across runs**: `tofu plan` / `terraform plan` against Mockway always shows all resources as "to be created" because Mockway starts with empty state (`:memory:` default). This is expected — each run is a clean environment. Use `--db ./mockway.db` for file-backed persistence if needed between runs.
+- **Plan does not strictly require Mockway**: For all-new resources (no existing state, no data sources), the Scaleway provider computes the plan locally without making API calls. `tofu plan` / `terraform plan` works with just dummy env vars (`SCW_API_URL=http://localhost:1`) and no running server. However, Mockway supports both plan and apply — point `SCW_API_URL` at Mockway for the full workflow (`tofu plan` → `tofu apply` / `terraform plan` → `terraform apply`).
 
 ## Distribution
 
