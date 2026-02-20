@@ -1,12 +1,16 @@
 package repository_test
 
 import (
+	"database/sql"
 	"encoding/json"
+	"math"
+	"path/filepath"
 	"testing"
 
 	"github.com/redscaresu/mockway/models"
 	"github.com/redscaresu/mockway/repository"
 	"github.com/stretchr/testify/require"
+	_ "modernc.org/sqlite"
 )
 
 func TestVPCRepository(t *testing.T) {
@@ -440,5 +444,72 @@ func TestRDBEndpointHelpersAndRandom(t *testing.T) {
 	// Also exercise JSON unmarshal failure path in repository helpers indirectly.
 	var bad map[string]any
 	err = json.Unmarshal([]byte("{"), &bad)
+	require.Error(t, err)
+}
+
+func TestRepositoryMethodsReturnErrorAfterClose(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	require.NoError(t, repo.Close())
+
+	_, err = repo.Exists("vpcs", "id", "x")
+	require.Error(t, err)
+
+	err = repo.Reset()
+	require.Error(t, err)
+
+	_, err = repo.FullState()
+	require.Error(t, err)
+
+	_, err = repo.ServiceState("instance")
+	require.Error(t, err)
+
+	err = repo.DeleteServer("x")
+	require.Error(t, err)
+}
+
+func TestCreateMarshalFailureUnsupportedValue(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	_, err = repo.CreateVPC("fr-par", map[string]any{
+		"name": "bad",
+		"nan":  math.NaN(), // json.Marshal unsupported value: NaN
+	})
+	require.Error(t, err)
+}
+
+func TestFullStateFailsOnCorruptRowJSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "repo.db")
+	repo, err := repository.New(dbPath)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.Exec(`INSERT INTO vpcs (id, region, data) VALUES (?, ?, ?)`, "vpc-bad", "fr-par", "{")
+	require.NoError(t, err)
+
+	_, err = repo.FullState()
+	require.Error(t, err)
+}
+
+func TestServiceStateFailsOnCorruptRowJSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "repo.db")
+	repo, err := repository.New(dbPath)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.Exec(`INSERT INTO instance_servers (id, zone, data) VALUES (?, ?, ?)`, "srv-bad", "fr-par-1", "{")
+	require.NoError(t, err)
+
+	_, err = repo.ServiceState("instance")
 	require.Error(t, err)
 }

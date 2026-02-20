@@ -437,6 +437,104 @@ func TestCreateServerRejectsUnknownSecurityGroupReference(t *testing.T) {
 	require.Equal(t, "referenced resource not found", body["message"])
 }
 
+func TestCreateServerNormalizesSecurityGroupMapMissingName(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, sgResp := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/security_groups", map[string]any{"name": "sg-1"})
+	require.Equal(t, 200, status)
+	sgID := resourceID(sgResp)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{
+			"name":           "web-1",
+			"security_group": map[string]any{"id": sgID},
+		},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	sg := server["security_group"].(map[string]any)
+	require.Equal(t, sgID, sg["id"])
+	require.Equal(t, "", sg["name"])
+	require.Equal(t, sgID, server["security_group_id"])
+}
+
+func TestCreateServerNormalizesSecurityGroupIDOnlyInput(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, sgResp := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/security_groups", map[string]any{"name": "sg-1"})
+	require.Equal(t, 200, status)
+	sgID := resourceID(sgResp)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "security_group_id": sgID},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	sg := server["security_group"].(map[string]any)
+	require.Equal(t, sgID, sg["id"])
+	require.Equal(t, "", sg["name"])
+	require.Equal(t, sgID, server["security_group_id"])
+}
+
+func TestCreateServerClearsInvalidSecurityGroupType(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{
+			"name":              "web-1",
+			"security_group":    float64(123),
+			"security_group_id": "ignored",
+		},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	require.Contains(t, server, "security_group")
+	require.Nil(t, server["security_group"])
+	require.NotContains(t, server, "security_group_id")
+}
+
+func TestCreateServerEmptySecurityGroupStringClearsReference(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, sgResp := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/security_groups", map[string]any{"name": "sg-1"})
+	require.Equal(t, 200, status)
+	sgID := resourceID(sgResp)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{
+			"name":              "web-1",
+			"security_group":    "   ",
+			"security_group_id": sgID,
+		},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	require.Contains(t, server, "security_group")
+	require.Nil(t, server["security_group"])
+	require.NotContains(t, server, "security_group_id")
+}
+
+func TestCreateServerRejectsUnknownSecurityGroupIDOnly(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "security_group_id": "non-existent-sg"},
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "referenced resource not found", body["message"])
+}
+
 func TestInstanceServerLifecycle(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
