@@ -1199,7 +1199,7 @@ Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except 
 
 ## Pending Fixes
 
-1. **Products/servers `per_volume_constraint`**: Each server type entry in `ListProductsServers` needs a `per_volume_constraint` field with an `l_ssd` sub-object containing `min_size` and `max_size`. Without this, the provider can't determine that the server type supports local SSD volumes — the root volume gets typed as block SSD, the local volume total becomes 0, and validation fails against `volumes_constraint.min_size`. Example for DEV1-S:
+1. **Products/servers `per_volume_constraint`**: `volumes_constraint` (with `min_size` and `max_size`) is already implemented. What's still missing: each server type entry also needs a `per_volume_constraint` field with an `l_ssd` sub-object containing `min_size` and `max_size`. Without this, the provider can't determine that the server type supports local SSD volumes — the root volume gets typed as block SSD, the local volume total becomes 0, and validation fails against `volumes_constraint.min_size`. Example for DEV1-S:
    ```json
    "per_volume_constraint": {
      "l_ssd": {"min_size": 1000000000, "max_size": 20000000000}
