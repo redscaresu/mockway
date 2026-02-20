@@ -140,6 +140,11 @@ func TestUnknownServiceState404(t *testing.T) {
 	require.Equal(t, 404, status)
 	require.Equal(t, "not_found", body["type"])
 	require.Equal(t, "unknown service", body["message"])
+
+	status, body = testutil.DoGet(t, ts, "/mock/state/account")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "unknown service", body["message"])
 }
 
 func TestRDBInitEndpointsValidationAndEnginePort(t *testing.T) {
@@ -204,11 +209,232 @@ func TestAdminResetAndStateShape(t *testing.T) {
 	require.Contains(t, state, "lb")
 	require.Contains(t, state, "k8s")
 	require.Contains(t, state, "rdb")
+	require.Contains(t, state, "iam")
 
 	instance := state["instance"].(map[string]any)
 	require.Len(t, instance["servers"].([]any), 0)
 	vpc := state["vpc"].(map[string]any)
 	require.Len(t, vpc["vpcs"].([]any), 0)
+}
+
+func TestIAMApplicationLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	require.Equal(t, 200, status)
+	appID := body["id"].(string)
+
+	status, body = testutil.DoGet(t, ts, "/iam/v1alpha1/applications/"+appID)
+	require.Equal(t, 200, status)
+	require.Equal(t, appID, body["id"])
+
+	status, body = testutil.DoList(t, ts, "/iam/v1alpha1/applications")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), body["total_count"])
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/applications/"+appID)
+	require.Equal(t, 204, status)
+}
+
+func TestIAMAPIKeyLifecycleAndRules(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	status, key := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"application_id": app["id"]})
+	require.Equal(t, 200, status)
+	accessKey := key["access_key"].(string)
+	require.NotEmpty(t, key["secret_key"])
+
+	status, got := testutil.DoGet(t, ts, "/iam/v1alpha1/api-keys/"+accessKey)
+	require.Equal(t, 200, status)
+	_, hasSecret := got["secret_key"]
+	require.False(t, hasSecret)
+	require.Equal(t, app["id"], got["application_id"])
+
+	status, list := testutil.DoList(t, ts, "/iam/v1alpha1/api-keys")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), list["total_count"])
+	item := list["api_keys"].([]any)[0].(map[string]any)
+	_, hasSecret = item["secret_key"]
+	require.False(t, hasSecret)
+
+	status, userKey := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"user_id": "user-1"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "user-1", userKey["user_id"])
+
+	status, body := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"application_id": "non-existent"})
+	require.Equal(t, 404, status)
+	require.Equal(t, "referenced resource not found", body["message"])
+
+	status, body = testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{
+		"application_id": app["id"],
+		"user_id":        "user-1",
+	})
+	require.Equal(t, 400, status)
+	require.Equal(t, "invalid_argument", body["type"])
+
+	status, body = testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{})
+	require.Equal(t, 400, status)
+	require.Equal(t, "invalid_argument", body["type"])
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/applications/"+app["id"].(string))
+	require.Equal(t, 409, status)
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/api-keys/"+accessKey)
+	require.Equal(t, 204, status)
+}
+
+func TestIAMPolicyLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	status, pol := testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{"name": "p1", "application_id": app["id"]})
+	require.Equal(t, 200, status)
+	polID := pol["id"].(string)
+
+	status, _ = testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{"name": "p2"})
+	require.Equal(t, 200, status)
+
+	status, body := testutil.DoGet(t, ts, "/iam/v1alpha1/policies/"+polID)
+	require.Equal(t, 200, status)
+	require.Equal(t, polID, body["id"])
+
+	status, body = testutil.DoList(t, ts, "/iam/v1alpha1/policies")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(2), body["total_count"])
+
+	status, body = testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{
+		"name":           "bad",
+		"application_id": "non-existent",
+	})
+	require.Equal(t, 404, status)
+	require.Equal(t, "referenced resource not found", body["message"])
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/policies/"+polID)
+	require.Equal(t, 204, status)
+}
+
+func TestIAMAndAccountSSHKeyCompatibility(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, fromAccount := testutil.DoCreate(t, ts, "/account/v2alpha1/ssh-keys", map[string]any{
+		"name":       "legacy",
+		"public_key": "ssh-ed25519 AAAAlegacy",
+	})
+	require.Equal(t, 200, status)
+	keyID := fromAccount["id"].(string)
+
+	status, _ = testutil.DoGet(t, ts, "/iam/v1alpha1/ssh-keys/"+keyID)
+	require.Equal(t, 200, status)
+
+	status, fromIAM := testutil.DoCreate(t, ts, "/iam/v1alpha1/ssh-keys", map[string]any{
+		"name":       "new",
+		"public_key": "ssh-ed25519 AAAAnew",
+	})
+	require.Equal(t, 200, status)
+	otherID := fromIAM["id"].(string)
+
+	status, _ = testutil.DoGet(t, ts, "/account/v2alpha1/ssh-keys/"+otherID)
+	require.Equal(t, 200, status)
+
+	status, listIAM := testutil.DoList(t, ts, "/iam/v1alpha1/ssh-keys")
+	require.Equal(t, 200, status)
+	status, listAccount := testutil.DoList(t, ts, "/account/v2alpha1/ssh-keys")
+	require.Equal(t, 200, status)
+	require.Equal(t, listIAM["total_count"], listAccount["total_count"])
+
+	status = testutil.DoDelete(t, ts, "/account/v2alpha1/ssh-keys/"+keyID)
+	require.Equal(t, 204, status)
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/ssh-keys/"+otherID)
+	require.Equal(t, 204, status)
+}
+
+func TestIAMServiceState(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"application_id": app["id"]})
+	testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{"name": "pol"})
+	testutil.DoCreate(t, ts, "/iam/v1alpha1/ssh-keys", map[string]any{"name": "k", "public_key": "ssh-ed25519 AAAA"})
+
+	status, body := testutil.DoGet(t, ts, "/mock/state/iam")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "applications")
+	require.Contains(t, body, "api_keys")
+	require.Contains(t, body, "policies")
+	require.Contains(t, body, "ssh_keys")
+	apiKeys := body["api_keys"].([]any)
+	require.NotEmpty(t, apiKeys)
+	_, hasSecret := apiKeys[0].(map[string]any)["secret_key"]
+	require.False(t, hasSecret)
+
+	// Full state should also include IAM API keys without secret_key.
+	status, full := testutil.DoGet(t, ts, "/mock/state")
+	require.Equal(t, 200, status)
+	iam := full["iam"].(map[string]any)
+	keys := iam["api_keys"].([]any)
+	require.NotEmpty(t, keys)
+	_, hasSecret = keys[0].(map[string]any)["secret_key"]
+	require.False(t, hasSecret)
+}
+
+func TestServiceStateAllServices(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Seed one resource per service.
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "v"})
+	_, pn := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{"name": "pn", "vpc_id": vpc["id"]})
+	_, srv := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "s"})
+	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+srv["id"].(string)+"/private_nics", map[string]any{"private_network_id": pn["id"]})
+	testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "k"})
+	testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+cluster["id"].(string)+"/pools", map[string]any{"name": "p"})
+	testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{"name": "db", "engine": "PostgreSQL-15"})
+	testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+
+	for _, svc := range []string{"instance", "vpc", "lb", "k8s", "rdb", "iam"} {
+		t.Run(svc, func(t *testing.T) {
+			status, body := testutil.DoGet(t, ts, "/mock/state/"+svc)
+			require.Equal(t, 200, status)
+			require.NotEmpty(t, body)
+		})
+	}
+}
+
+func TestDeleteNonExistentReturns404(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	paths := []string{
+		"/instance/v1/zones/fr-par-1/servers/non-existent",
+		"/instance/v1/zones/fr-par-1/ips/non-existent",
+		"/instance/v1/zones/fr-par-1/security_groups/non-existent",
+		"/vpc/v1/regions/fr-par/vpcs/non-existent",
+		"/vpc/v1/regions/fr-par/private-networks/non-existent",
+		"/lb/v1/zones/fr-par-1/lbs/non-existent",
+		"/lb/v1/zones/fr-par-1/frontends/non-existent",
+		"/lb/v1/zones/fr-par-1/backends/non-existent",
+		"/k8s/v1/regions/fr-par/clusters/non-existent",
+		"/k8s/v1/regions/fr-par/pools/non-existent",
+		"/rdb/v1/regions/fr-par/instances/non-existent",
+		"/iam/v1alpha1/applications/non-existent",
+		"/iam/v1alpha1/api-keys/non-existent",
+		"/iam/v1alpha1/policies/non-existent",
+		"/iam/v1alpha1/ssh-keys/non-existent",
+	}
+
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			status := testutil.DoDelete(t, ts, p)
+			require.Equal(t, 404, status)
+		})
+	}
 }
 
 func TestServiceStateSuccessPath(t *testing.T) {

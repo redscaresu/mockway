@@ -1,10 +1,12 @@
 package repository
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -129,6 +131,24 @@ func (r *Repository) init() error {
 			data JSON NOT NULL,
 			PRIMARY KEY (instance_id, name)
 		)`,
+		`CREATE TABLE IF NOT EXISTS iam_applications (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_api_keys (
+			access_key TEXT PRIMARY KEY,
+			application_id TEXT REFERENCES iam_applications(id),
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_policies (
+			id TEXT PRIMARY KEY,
+			application_id TEXT REFERENCES iam_applications(id),
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_ssh_keys (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL
+		)`,
 	}
 
 	for _, stmt := range stmts {
@@ -176,6 +196,10 @@ func (r *Repository) Reset() error {
 		"rdb_databases",
 		"rdb_users",
 		"rdb_instances",
+		"iam_api_keys",
+		"iam_policies",
+		"iam_ssh_keys",
+		"iam_applications",
 		"private_networks",
 		"vpcs",
 	}
@@ -626,6 +650,135 @@ func (r *Repository) DeleteRDBUser(instanceID, name string) error {
 	return r.deleteBy("rdb_users", "instance_id = ? AND name = ?", instanceID, name)
 }
 
+func (r *Repository) CreateIAMApplication(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	id := newID()
+	data["id"] = id
+	if err := r.insertJSON("iam_applications", []colVal{{name: "id", val: id}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMApplication(id string) (map[string]any, error) {
+	return r.getJSONByID("iam_applications", "id", id)
+}
+
+func (r *Repository) ListIAMApplications() ([]map[string]any, error) {
+	return r.listJSON("iam_applications", "", "")
+}
+
+func (r *Repository) DeleteIAMApplication(id string) error {
+	return r.deleteBy("iam_applications", "id = ?", id)
+}
+
+func (r *Repository) CreateIAMAPIKey(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	accessKey := "SCW" + randomAlphaNum(17)
+	data["access_key"] = accessKey
+	data["secret_key"] = newID()
+	data["created_at"] = now
+	data["updated_at"] = now
+
+	var appID any
+	if v, ok := data["application_id"].(string); ok && strings.TrimSpace(v) != "" {
+		appID = v
+	} else {
+		appID = nil
+	}
+
+	if err := r.insertJSON("iam_api_keys", []colVal{{name: "access_key", val: accessKey}, {name: "application_id", val: appID}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMAPIKey(accessKey string) (map[string]any, error) {
+	out, err := r.getJSONByID("iam_api_keys", "access_key", accessKey)
+	if err != nil {
+		return nil, err
+	}
+	delete(out, "secret_key")
+	return out, nil
+}
+
+func (r *Repository) ListIAMAPIKeys() ([]map[string]any, error) {
+	items, err := r.listJSON("iam_api_keys", "", "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		delete(items[i], "secret_key")
+	}
+	return items, nil
+}
+
+func (r *Repository) DeleteIAMAPIKey(accessKey string) error {
+	return r.deleteBy("iam_api_keys", "access_key = ?", accessKey)
+}
+
+func (r *Repository) CreateIAMPolicy(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+
+	policyID := newID()
+	data["id"] = policyID
+	var appID any
+	if v, ok := data["application_id"].(string); ok && strings.TrimSpace(v) != "" {
+		appID = v
+	} else {
+		appID = nil
+	}
+	if err := r.insertJSON("iam_policies", []colVal{{name: "id", val: policyID}, {name: "application_id", val: appID}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMPolicy(id string) (map[string]any, error) {
+	return r.getJSONByID("iam_policies", "id", id)
+}
+
+func (r *Repository) ListIAMPolicies() ([]map[string]any, error) {
+	return r.listJSON("iam_policies", "", "")
+}
+
+func (r *Repository) DeleteIAMPolicy(id string) error {
+	return r.deleteBy("iam_policies", "id = ?", id)
+}
+
+func (r *Repository) CreateIAMSSHKey(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	data["fingerprint"] = "256 SHA256:" + randomAlphaNum(32)
+	id := newID()
+	data["id"] = id
+	if err := r.insertJSON("iam_ssh_keys", []colVal{{name: "id", val: id}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMSSHKey(id string) (map[string]any, error) {
+	return r.getJSONByID("iam_ssh_keys", "id", id)
+}
+
+func (r *Repository) ListIAMSSHKeys() ([]map[string]any, error) {
+	return r.listJSON("iam_ssh_keys", "", "")
+}
+
+func (r *Repository) DeleteIAMSSHKey(id string) error {
+	return r.deleteBy("iam_ssh_keys", "id = ?", id)
+}
+
 func (r *Repository) FullState() (map[string]any, error) {
 	servers, err := r.listJSON("instance_servers", "", "")
 	if err != nil {
@@ -687,6 +840,22 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	iamApplications, err := r.listJSON("iam_applications", "", "")
+	if err != nil {
+		return nil, err
+	}
+	iamAPIKeys, err := r.ListIAMAPIKeys()
+	if err != nil {
+		return nil, err
+	}
+	iamPolicies, err := r.listJSON("iam_policies", "", "")
+	if err != nil {
+		return nil, err
+	}
+	iamSSHKeys, err := r.listJSON("iam_ssh_keys", "", "")
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"instance": map[string]any{
@@ -713,6 +882,12 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"instances": rdbInstances,
 			"databases": rdbDatabases,
 			"users":     rdbUsers,
+		},
+		"iam": map[string]any{
+			"applications": iamApplications,
+			"api_keys":     iamAPIKeys,
+			"policies":     iamPolicies,
+			"ssh_keys":     iamSSHKeys,
 		},
 	}, nil
 }
@@ -809,6 +984,29 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			"databases": databases,
 			"users":     users,
 		}, nil
+	case "iam":
+		applications, err := r.listJSON("iam_applications", "", "")
+		if err != nil {
+			return nil, err
+		}
+		apiKeys, err := r.ListIAMAPIKeys()
+		if err != nil {
+			return nil, err
+		}
+		policies, err := r.listJSON("iam_policies", "", "")
+		if err != nil {
+			return nil, err
+		}
+		sshKeys, err := r.listJSON("iam_ssh_keys", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"applications": applications,
+			"api_keys":     apiKeys,
+			"policies":     policies,
+			"ssh_keys":     sshKeys,
+		}, nil
 	default:
 		return nil, models.ErrNotFound
 	}
@@ -855,4 +1053,19 @@ func rdbPortFromEngine(engine any) float64 {
 		return float64(3306)
 	}
 	return float64(5432)
+}
+
+func randomAlphaNum(n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var b strings.Builder
+	b.Grow(n)
+	max := big.NewInt(int64(len(alphabet)))
+	for i := 0; i < n; i++ {
+		v, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return strings.Repeat("A", n)
+		}
+		b.WriteByte(alphabet[v.Int64()])
+	}
+	return b.String()
 }

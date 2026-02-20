@@ -108,6 +108,36 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/instances/{instance_id}/users", app.ListRDBUsers)
 			r.Delete("/instances/{instance_id}/users/{user_name}", app.DeleteRDBUser)
 		})
+
+		r.Route("/iam/v1alpha1", func(r chi.Router) {
+			r.Post("/applications", app.CreateIAMApplication)
+			r.Get("/applications", app.ListIAMApplications)
+			r.Get("/applications/{application_id}", app.GetIAMApplication)
+			r.Delete("/applications/{application_id}", app.DeleteIAMApplication)
+
+			r.Post("/api-keys", app.CreateIAMAPIKey)
+			r.Get("/api-keys", app.ListIAMAPIKeys)
+			r.Get("/api-keys/{access_key}", app.GetIAMAPIKey)
+			r.Delete("/api-keys/{access_key}", app.DeleteIAMAPIKey)
+
+			r.Post("/policies", app.CreateIAMPolicy)
+			r.Get("/policies", app.ListIAMPolicies)
+			r.Get("/policies/{policy_id}", app.GetIAMPolicy)
+			r.Delete("/policies/{policy_id}", app.DeleteIAMPolicy)
+
+			r.Post("/ssh-keys", app.CreateIAMSSHKey)
+			r.Get("/ssh-keys", app.ListIAMSSHKeys)
+			r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
+			r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
+		})
+
+		// Legacy alias for scaleway_account_ssh_key.
+		r.Route("/account/v2alpha1", func(r chi.Router) {
+			r.Post("/ssh-keys", app.CreateIAMSSHKey)
+			r.Get("/ssh-keys", app.ListIAMSSHKeys)
+			r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
+			r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
+		})
 	})
 }
 
