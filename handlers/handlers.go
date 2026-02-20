@@ -27,10 +27,22 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(app.requireAuthToken)
 
+		r.Route("/marketplace/v2", func(r chi.Router) {
+			r.Get("/local-images", app.ListMarketplaceLocalImages)
+			r.Get("/local-images/{local_image_id}", app.GetMarketplaceLocalImage)
+		})
+
 		r.Route("/instance/v1/zones/{zone}", func(r chi.Router) {
+			r.Get("/products/servers", app.ListProductsServers)
+
 			r.Post("/servers", app.CreateServer)
 			r.Get("/servers", app.ListServers)
 			r.Get("/servers/{server_id}", app.GetServer)
+			r.Post("/servers/{server_id}/action", app.ServerAction)
+			r.Get("/volumes/{volume_id}", app.GetVolume)
+			r.Delete("/volumes/{volume_id}", app.DeleteVolume)
+			r.Get("/servers/{server_id}/user_data", app.ListServerUserData)
+			r.Patch("/servers/{server_id}/user_data/{key}", app.SetServerUserData)
 			r.Delete("/servers/{server_id}", app.DeleteServer)
 
 			r.Post("/ips", app.CreateIP)

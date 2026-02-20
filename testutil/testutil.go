@@ -22,6 +22,8 @@ func NewTestServer(t *testing.T) (*httptest.Server, func()) {
 	app := handlers.NewApplication(repo)
 	r := chi.NewRouter()
 	app.RegisterRoutes(r)
+	r.NotFound(handlers.UnimplementedHandler)
+	r.MethodNotAllowed(handlers.UnimplementedHandler)
 	ts := httptest.NewServer(r)
 	cleanup := func() {
 		ts.Close()

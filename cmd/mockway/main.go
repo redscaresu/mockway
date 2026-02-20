@@ -40,6 +40,8 @@ func run() error {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	app.RegisterRoutes(r)
+	r.NotFound(handlers.UnimplementedHandler)
+	r.MethodNotAllowed(handlers.UnimplementedHandler)
 
 	return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }

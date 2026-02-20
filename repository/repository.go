@@ -65,18 +65,18 @@ func (r *Repository) init() error {
 		`CREATE TABLE IF NOT EXISTS instance_servers (
 			id TEXT PRIMARY KEY,
 			zone TEXT NOT NULL,
-			security_group_id TEXT REFERENCES instance_security_groups(id),
+			security_group_id TEXT REFERENCES instance_security_groups(id) ON DELETE SET NULL,
 			data JSON NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS instance_ips (
 			id TEXT PRIMARY KEY,
-			server_id TEXT REFERENCES instance_servers(id),
+			server_id TEXT REFERENCES instance_servers(id) ON DELETE SET NULL,
 			zone TEXT NOT NULL,
 			data JSON NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS instance_private_nics (
 			id TEXT PRIMARY KEY,
-			server_id TEXT NOT NULL REFERENCES instance_servers(id),
+			server_id TEXT NOT NULL REFERENCES instance_servers(id) ON DELETE CASCADE,
 			private_network_id TEXT NOT NULL REFERENCES private_networks(id),
 			zone TEXT NOT NULL,
 			data JSON NOT NULL
@@ -444,7 +444,28 @@ func (r *Repository) ListSecurityGroups(zone string) ([]map[string]any, error) {
 	return r.listJSON("instance_security_groups", "zone", zone)
 }
 func (r *Repository) DeleteSecurityGroup(id string) error {
-	return r.deleteBy("instance_security_groups", "id = ?", id)
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := r.detachSecurityGroupFromServersTx(tx, id); err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(`DELETE FROM instance_security_groups WHERE id = ?`, id)
+	if err != nil {
+		return mapDeleteSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[string]any, error) {
@@ -497,6 +518,24 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	data["state"] = "running"
 	data["creation_date"] = now
 	data["modification_date"] = now
+	data["public_ips"] = []any{}
+	data["public_ip"] = nil
+	serverName, _ := data["name"].(string)
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		serverName = "server"
+	}
+	data["volumes"] = map[string]any{
+		"0": map[string]any{
+			"id":          newID(),
+			"name":        fmt.Sprintf("%s-vol-0", serverName),
+			"size":        20000000000,
+			"volume_type": "l_ssd",
+			"state":       "available",
+			"boot":        true,
+			"zone":        zone,
+		},
+	}
 	sgID, _ := data["security_group_id"].(string)
 	var extras []colVal
 	if sgID != "" {
@@ -511,7 +550,145 @@ func (r *Repository) ListServers(zone string) ([]map[string]any, error) {
 	return r.listJSON("instance_servers", "zone", zone)
 }
 func (r *Repository) DeleteServer(id string) error {
-	return r.deleteBy("instance_servers", "id = ?", id)
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := r.detachIPsFromServerTx(tx, id); err != nil {
+		return err
+	}
+
+	// Keep behavior consistent on older DB files created before FK CASCADE migration.
+	if _, err := tx.Exec(`DELETE FROM instance_private_nics WHERE server_id = ?`, id); err != nil {
+		return mapDeleteSQLError(err)
+	}
+
+	res, err := tx.Exec(`DELETE FROM instance_servers WHERE id = ?`, id)
+	if err != nil {
+		return mapDeleteSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func (r *Repository) GetInstanceVolume(zone, volumeID string) (map[string]any, error) {
+	servers, err := r.listJSON("instance_servers", "zone", zone)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range servers {
+		volumes, ok := server["volumes"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, raw := range volumes {
+			vol, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := vol["id"].(string)
+			if id != volumeID {
+				continue
+			}
+			return cloneMap(vol), nil
+		}
+	}
+	return nil, models.ErrNotFound
+}
+
+func (r *Repository) detachIPsFromServerTx(tx *sql.Tx, serverID string) error {
+	rows, err := tx.Query(`SELECT id, data FROM instance_ips WHERE server_id = ?`, serverID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type update struct {
+		id   string
+		data map[string]any
+	}
+	updates := []update{}
+	for rows.Next() {
+		var (
+			id  string
+			raw []byte
+		)
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		data, err := unmarshalData(raw)
+		if err != nil {
+			return err
+		}
+		data["server_id"] = nil
+		updates = append(updates, update{id: id, data: data})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, u := range updates {
+		b, err := marshalData(u.data)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE instance_ips SET server_id = NULL, data = ? WHERE id = ?`, b, u.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Repository) detachSecurityGroupFromServersTx(tx *sql.Tx, sgID string) error {
+	rows, err := tx.Query(`SELECT id, data FROM instance_servers WHERE security_group_id = ?`, sgID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type update struct {
+		id   string
+		data map[string]any
+	}
+	updates := []update{}
+	for rows.Next() {
+		var (
+			id  string
+			raw []byte
+		)
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		data, err := unmarshalData(raw)
+		if err != nil {
+			return err
+		}
+		data["security_group_id"] = nil
+		data["security_group"] = nil
+		updates = append(updates, update{id: id, data: data})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, u := range updates {
+		b, err := marshalData(u.data)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE instance_servers SET security_group_id = NULL, data = ? WHERE id = ?`, b, u.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) CreateIP(zone string, data map[string]any) (map[string]any, error) {

@@ -26,6 +26,417 @@ func TestAuthRequiredOnScalewayRoutes(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+func TestInstanceProductsServersCatalog(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/products/servers")
+	require.Equal(t, 200, status)
+
+	servers := body["servers"].(map[string]any)
+	for _, typ := range []string{"DEV1-S", "DEV1-M", "GP1-S", "GP1-M", "GP1-XS"} {
+		v, ok := servers[typ]
+		require.True(t, ok, "missing server type %s", typ)
+		entry := v.(map[string]any)
+		require.Contains(t, entry, "monthly_price")
+		require.Contains(t, entry, "hourly_price")
+		require.Contains(t, entry, "ncpus")
+		require.Contains(t, entry, "ram")
+		require.Contains(t, entry, "arch")
+		require.Contains(t, entry, "volumes_constraint")
+		volumes := entry["volumes_constraint"].(map[string]any)
+		require.Contains(t, volumes, "min_size")
+		require.Contains(t, volumes, "max_size")
+		require.Contains(t, entry, "per_volume_constraint")
+		perVolume := entry["per_volume_constraint"].(map[string]any)
+		lssd := perVolume["l_ssd"].(map[string]any)
+		require.Contains(t, lssd, "min_size")
+		require.Contains(t, lssd, "max_size")
+		require.Equal(t, "l_ssd", entry["volume_type"])
+		require.Equal(t, "l_ssd", entry["default_volume_type"])
+	}
+
+	status, paged := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/products/servers?page=1")
+	require.Equal(t, 200, status)
+	require.Equal(t, servers, paged["servers"])
+}
+
+func TestUnimplementedUnknownPathReturns501(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/does-not-exist")
+	require.Equal(t, 501, status)
+	require.Equal(t, "not_implemented", body["type"])
+	require.Contains(t, body["message"], "GET /instance/v1/zones/fr-par-1/does-not-exist")
+}
+
+func TestUnimplementedMethodReturns501(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := doPut(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "x"})
+	require.Equal(t, 501, status)
+	require.Equal(t, "not_implemented", body["type"])
+	require.Contains(t, body["message"], "PUT /instance/v1/zones/fr-par-1/servers")
+}
+
+func TestMarketplaceLocalImagesListFilter(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), body["total_count"])
+	images := body["local_images"].([]any)
+	require.Len(t, images, 1)
+	img := images[0].(map[string]any)
+	require.Equal(t, "ubuntu_noble", img["label"])
+	require.Equal(t, "fr-par-1", img["zone"])
+	require.Equal(t, "instance_sbs", img["type"])
+}
+
+func TestMarketplaceLocalImagesCompatibleTypesContainsDEV1S(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	images := body["local_images"].([]any)
+	require.NotEmpty(t, images)
+	img := images[0].(map[string]any)
+	compatible := img["compatible_commercial_types"].([]any)
+	require.Contains(t, compatible, "DEV1-S")
+}
+
+func TestMarketplaceLocalImagesUnknownLabelEmpty(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=not_real&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
+	require.Len(t, body["local_images"].([]any), 0)
+}
+
+func TestMarketplaceLocalImageGetByID(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, list := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	images := list["local_images"].([]any)
+	require.NotEmpty(t, images)
+	id := images[0].(map[string]any)["id"].(string)
+
+	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images/"+id)
+	require.Equal(t, 200, status)
+	require.Equal(t, id, body["id"])
+	require.Equal(t, "ubuntu_noble", body["label"])
+	require.Equal(t, "fr-par-1", body["zone"])
+}
+
+func TestMarketplaceLocalImageGetUnknownID404(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images/00000000-0000-0000-0000-000000000000")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+}
+
+func TestMarketplaceLocalImagesPaginationIgnored(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, baseline := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+
+	status, paged := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs&page=1")
+	require.Equal(t, 200, status)
+	require.Equal(t, baseline, paged)
+}
+
+func TestCreateServerNormalizesImageLabelToObject(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, list := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	expectedID := list["local_images"].([]any)[0].(map[string]any)["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "commercial_type": "DEV1-S", "image": "ubuntu_noble"},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	image := server["image"].(map[string]any)
+	require.Equal(t, expectedID, image["id"])
+	require.Equal(t, "ubuntu_noble", image["name"])
+	require.Equal(t, "x86_64", image["arch"])
+
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string))
+	require.Equal(t, 200, status)
+	server = unwrapInstanceResource(body)
+	image = server["image"].(map[string]any)
+	require.Equal(t, expectedID, image["id"])
+}
+
+func TestCreateServerNormalizesImageUUIDToObject(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	imageID := "11111111-1111-1111-1111-111111111111"
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "commercial_type": "DEV1-S", "image": imageID},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	image := server["image"].(map[string]any)
+	require.Equal(t, imageID, image["id"])
+	require.Equal(t, imageID, image["name"])
+}
+
+func TestCreateServerOverridesMalformedPublicIPFields(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{
+			"name":       "web-1",
+			"public_ips": "bad-type",
+			"public_ip":  "bad-type",
+		},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	publicIPs, ok := server["public_ips"].([]any)
+	require.True(t, ok)
+	require.Len(t, publicIPs, 0)
+	require.Contains(t, server, "public_ip")
+	require.Nil(t, server["public_ip"])
+}
+
+func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+
+	volumes, ok := server["volumes"].(map[string]any)
+	require.True(t, ok)
+	rootRaw, ok := volumes["0"]
+	require.True(t, ok)
+	root := rootRaw.(map[string]any)
+	require.NotEmpty(t, root["id"])
+	require.Equal(t, "web-1-vol-0", root["name"])
+	require.Equal(t, float64(20000000000), root["size"])
+	require.Equal(t, "l_ssd", root["volume_type"])
+	require.Equal(t, "available", root["state"])
+	require.Equal(t, true, root["boot"])
+	require.Equal(t, "fr-par-1", root["zone"])
+
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string))
+	require.Equal(t, 200, status)
+	server = unwrapInstanceResource(body)
+	volumes, ok = server["volumes"].(map[string]any)
+	require.True(t, ok)
+	_, ok = volumes["0"]
+	require.True(t, ok)
+}
+
+func TestCreateServerOverridesProvidedVolumesWithRootVolume(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "volumes": map[string]any{}},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+
+	volumes, ok := server["volumes"].(map[string]any)
+	require.True(t, ok)
+	rootRaw, ok := volumes["0"]
+	require.True(t, ok)
+	root := rootRaw.(map[string]any)
+	require.NotEmpty(t, root["id"])
+	require.Equal(t, "web-1-vol-0", root["name"])
+}
+
+func TestGetVolumeFromServerRootVolume(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	volumes := server["volumes"].(map[string]any)
+	root := volumes["0"].(map[string]any)
+	volumeID := root["id"].(string)
+
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volumeID)
+	require.Equal(t, 200, status)
+	volume := body["volume"].(map[string]any)
+	require.Equal(t, volumeID, volume["id"])
+	require.Equal(t, "web-1-vol-0", volume["name"])
+	require.Equal(t, "fr-par-1", volume["zone"])
+}
+
+func TestGetVolumeNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/volumes/non-existent")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+}
+
+func TestDeleteVolumeReturns204(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/volumes/non-existent")
+	require.Equal(t, 204, status)
+}
+
+func TestDeleteVolumeAfterServerDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	serverID := server["id"].(string)
+	volumeID := server["volumes"].(map[string]any)["0"].(map[string]any)["id"].(string)
+
+	status = testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 204, status)
+
+	status = testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volumeID)
+	require.Equal(t, 204, status)
+}
+
+func TestDeleteServerDetachesIP(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "web-1"})
+	require.Equal(t, 200, status)
+	serverID := resourceID(server)
+
+	status, ip := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/ips", map[string]any{"server_id": serverID})
+	require.Equal(t, 200, status)
+	ipID := resourceID(ip)
+
+	status = testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 204, status)
+
+	status, ip = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/ips/"+ipID)
+	require.Equal(t, 200, status)
+	got := unwrapInstanceResource(ip)
+	require.Contains(t, got, "server_id")
+	require.Nil(t, got["server_id"])
+}
+
+func TestDeleteServerCascadesPrivateNICs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "vpc"})
+	_, pn := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{"name": "pn", "vpc_id": vpc["id"]})
+	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "web-1"})
+	serverID := resourceID(server)
+	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics", map[string]any{"private_network_id": pn["id"]})
+
+	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 204, status)
+
+	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
+}
+
+func TestDeleteSecurityGroupDetachesServer(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, sg := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/security_groups", map[string]any{"name": "sg-1"})
+	require.Equal(t, 200, status)
+	sgID := resourceID(sg)
+
+	status, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "web-1", "security_group": sgID})
+	require.Equal(t, 200, status)
+	serverID := resourceID(server)
+
+	status = testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/security_groups/"+sgID)
+	require.Equal(t, 204, status)
+
+	status, server = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 200, status)
+	got := unwrapInstanceResource(server)
+	require.Contains(t, got, "security_group")
+	require.Nil(t, got["security_group"])
+	require.Contains(t, got, "security_group_id")
+	require.Nil(t, got["security_group_id"])
+}
+
+func TestCreateServerNormalizesSecurityGroupStringToObject(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, sgResp := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups",
+		map[string]any{"name": "sg-1"},
+	)
+	require.Equal(t, 200, status)
+	sgID := resourceID(sgResp)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "security_group": sgID},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	sg := server["security_group"].(map[string]any)
+	require.Equal(t, sgID, sg["id"])
+	require.Equal(t, "", sg["name"])
+
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string))
+	require.Equal(t, 200, status)
+	server = unwrapInstanceResource(body)
+	sg = server["security_group"].(map[string]any)
+	require.Equal(t, sgID, sg["id"])
+}
+
+func TestCreateServerRejectsUnknownSecurityGroupReference(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1", "security_group": "non-existent-sg"},
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "referenced resource not found", body["message"])
+}
+
 func TestInstanceServerLifecycle(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -38,6 +449,11 @@ func TestInstanceServerLifecycle(t *testing.T) {
 	server := unwrapInstanceResource(body)
 	serverID := server["id"].(string)
 	require.NotEmpty(t, serverID)
+	publicIPs, ok := server["public_ips"].([]any)
+	require.True(t, ok)
+	require.Len(t, publicIPs, 0)
+	require.Contains(t, server, "public_ip")
+	require.Nil(t, server["public_ip"])
 
 	status, body = testutil.DoGet(t, ts,
 		"/instance/v1/zones/fr-par-1/servers/"+serverID,
@@ -45,6 +461,11 @@ func TestInstanceServerLifecycle(t *testing.T) {
 	require.Equal(t, 200, status)
 	server = unwrapInstanceResource(body)
 	require.Equal(t, "web-1", server["name"])
+	publicIPs, ok = server["public_ips"].([]any)
+	require.True(t, ok)
+	require.Len(t, publicIPs, 0)
+	require.Contains(t, server, "public_ip")
+	require.Nil(t, server["public_ip"])
 
 	status, body = testutil.DoList(t, ts,
 		"/instance/v1/zones/fr-par-1/servers",
@@ -61,6 +482,98 @@ func TestInstanceServerLifecycle(t *testing.T) {
 		"/instance/v1/zones/fr-par-1/servers/"+serverID,
 	)
 	require.Equal(t, 404, status)
+}
+
+func TestServerUserDataListEmpty(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	serverID := resourceID(body)
+
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/user_data")
+	require.Equal(t, 200, status)
+	userData, ok := body["user_data"].([]any)
+	require.True(t, ok)
+	require.Len(t, userData, 0)
+}
+
+func TestServerUserDataListNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/non-existent/user_data")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+}
+
+func TestServerUserDataPatchAccepted(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	serverID := resourceID(body)
+
+	status, _ = doPatch(t, ts,
+		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/user_data/cloud-init",
+		"#!/bin/bash\necho hello",
+	)
+	require.Equal(t, 204, status)
+}
+
+func TestServerUserDataPatchNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := doPatch(t, ts,
+		"/instance/v1/zones/fr-par-1/servers/non-existent/user_data/cloud-init",
+		"#!/bin/bash",
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+}
+
+func TestServerActionAccepted(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web-1"},
+	)
+	require.Equal(t, 200, status)
+	serverID := resourceID(created)
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/action",
+		map[string]any{"action": "poweroff"},
+	)
+	require.Equal(t, 200, status)
+	task := body["task"].(map[string]any)
+	require.NotEmpty(t, task["id"])
+	require.Equal(t, "poweroff", task["description"])
+	require.Equal(t, float64(100), task["progress"])
+	require.Equal(t, "success", task["status"])
+}
+
+func TestServerActionNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers/non-existent/action",
+		map[string]any{"action": "poweroff"},
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
 }
 
 func TestCrossServiceFlow(t *testing.T) {
@@ -276,7 +789,10 @@ func TestDeleteConflictForMultipleDependencies(t *testing.T) {
 		"private_network_id": pn["id"],
 	})
 	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server))
-	require.Equal(t, 409, status)
+	require.Equal(t, 204, status)
+	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server)+"/private_nics")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
 
 	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "k"})
 	testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+cluster["id"].(string)+"/pools", map[string]any{"name": "p"})

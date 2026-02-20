@@ -24,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-7 services + 1 legacy alias, 19 resource types + 1 catalog endpoint + 2 marketplace endpoints. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint; Instance has a products/servers catalog endpoint; Marketplace has list and get endpoints for image label resolution. ~87 handler methods + 3 admin endpoints + 1 catch-all (UnimplementedHandler). No S3 in v1.
+7 services + 1 legacy alias, 19 resource types + 1 catalog endpoint + 2 marketplace endpoints + 2 user_data stubs + 1 server action + 1 volume GET. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint; Instance has a products/servers catalog endpoint, user_data stubs (list keys + set key), a server action endpoint (poweroff/terminate), and a volume GET endpoint; Marketplace has list and get endpoints for image label resolution. ~91 handler methods + 3 admin endpoints + 1 catch-all (UnimplementedHandler). No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -39,7 +39,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both are implemented. Marketplace has 2 endpoints for image label resolution: `GET /marketplace/v2/local-images` (list, filtered by `image_label`, `zone`, `type` query params) and `GET /marketplace/v2/local-images/{local_image_id}` (get by ID). The provider calls these to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without these, the provider can't resolve non-UUID image references and server creation fails.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both fields are present in the catalog. Note: `min_size` is set to `0` (not the real Scaleway value) to work around a provider bug where omitting `volume_type` in the Terraform config causes client-side validation to fail — see resolved Pending Fix #1 for details. Marketplace has 2 endpoints for image label resolution: `GET /marketplace/v2/local-images` (list, filtered by `image_label`, `zone`, `type` query params) and `GET /marketplace/v2/local-images/{local_image_id}` (get by ID). The provider calls these to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without these, the provider can't resolve non-UUID image references and server creation fails.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -52,11 +52,15 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | GET | `/instance/v1/zones/{zone}/products/servers` | List available server types (static catalog) |
 | POST/GET | `/instance/v1/zones/{zone}/servers` | Create/List servers |
 | GET/DELETE | `/instance/v1/zones/{zone}/servers/{server_id}` | Get/Delete server |
+| POST | `/instance/v1/zones/{zone}/servers/{server_id}/action` | Server action (poweroff/terminate — returns completed task) |
 | POST/GET | `/instance/v1/zones/{zone}/ips` | Create/List IPs |
 | GET/DELETE | `/instance/v1/zones/{zone}/ips/{ip_id}` | Get/Delete IP |
 | POST/GET | `/instance/v1/zones/{zone}/security_groups` | Create/List security groups |
 | GET/PATCH/DELETE | `/instance/v1/zones/{zone}/security_groups/{sg_id}` | Get/Update/Delete security group |
 | PUT/GET | `/instance/v1/zones/{zone}/security_groups/{sg_id}/rules` | Set/List security group rules |
+| GET | `/instance/v1/zones/{zone}/servers/{server_id}/user_data` | List server user data keys (stub — returns empty) |
+| PATCH | `/instance/v1/zones/{zone}/servers/{server_id}/user_data/{key}` | Set server user data (stub — accepts and discards) |
+| GET/DELETE | `/instance/v1/zones/{zone}/volumes/{volume_id}` | Get/Delete volume |
 | POST/GET | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics` | Create/List private NICs |
 | GET/DELETE | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{nic_id}` | Get/Delete private NIC |
 | POST/GET | `/vpc/v1/regions/{region}/vpcs` | Create/List VPCs |
@@ -370,20 +374,20 @@ CREATE TABLE instance_security_groups (
 CREATE TABLE instance_servers (
     id TEXT PRIMARY KEY,
     zone TEXT NOT NULL,
-    security_group_id TEXT REFERENCES instance_security_groups(id),
+    security_group_id TEXT REFERENCES instance_security_groups(id) ON DELETE SET NULL,
     data JSON NOT NULL
 );
 
 CREATE TABLE instance_ips (
     id TEXT PRIMARY KEY,
-    server_id TEXT REFERENCES instance_servers(id),
+    server_id TEXT REFERENCES instance_servers(id) ON DELETE SET NULL,
     zone TEXT NOT NULL,
     data JSON NOT NULL
 );
 
 CREATE TABLE instance_private_nics (
     id TEXT PRIMARY KEY,
-    server_id TEXT NOT NULL REFERENCES instance_servers(id),
+    server_id TEXT NOT NULL REFERENCES instance_servers(id) ON DELETE CASCADE,
     private_network_id TEXT NOT NULL REFERENCES private_networks(id),
     zone TEXT NOT NULL,
     data JSON NOT NULL
@@ -513,15 +517,15 @@ The Scaleway RDB API accepts `init_endpoints` on create and returns `endpoints` 
 
 Port is derived from the `engine` field in the create request: `5432` for PostgreSQL, `3306` for MySQL. If engine is unrecognised, default to `5432`.
 
-1. **With `init_endpoints`** (private network): Request contains `"init_endpoints": [{"private_network": {"id": "<pn_id>"}}]`. Handler validates `<pn_id>` exists in `private_networks` table (404 if not). Stored/returned as:
+1. **With `init_endpoints`** (private network): Request contains `"init_endpoints": [{"private_network": {"id": "<pn_id>"}}]`. Handler validates `<pn_id>` exists in `private_networks` table (404 if not). Stored/returned as (PostgreSQL example):
    ```json
    "endpoints": [{"ip": "10.0.<random>.x", "port": 5432, "private_network": {"id": "<pn_id>"}}]
    ```
-   The handler generates a fake private IP (`10.x.x.x` range) and sets the port based on engine.
+   The handler generates a fake private IP (`10.x.x.x` range) and sets the port based on engine (`5432` for PostgreSQL, `3306` for MySQL).
 
-2. **Without `init_endpoints`** (public endpoint): No `init_endpoints` in request body. Stored/returned as:
+2. **Without `init_endpoints`** (public endpoint): No `init_endpoints` in request body. Stored/returned as (MySQL example):
    ```json
-   "endpoints": [{"ip": "51.15.<random>.x", "port": 5432}]
+   "endpoints": [{"ip": "51.15.<random>.x", "port": 3306}]
    ```
    The handler generates a fake public IP. No `private_network` key in the endpoint object.
 
@@ -1234,3 +1238,130 @@ GoReleaser → Go binaries + Docker image + Homebrew tap.
 - `repository.New()` must call `db.SetMaxOpenConns(1)` and `PRAGMA foreign_keys = ON` immediately after `sql.Open()` (see SQLite connection strategy above)
 - Generate UUIDs for all resource IDs on create (except RDB databases/users — identified by name, and IAM API keys — identified by server-generated `access_key`)
 - Return the created resource in the response body (matching Scaleway's behavior)
+
+## Pending Fixes
+
+### 1. ~~Products/servers catalog — default volume type~~ RESOLVED
+
+**Root cause**: Provider bug in client-side validation (`validateLocalVolumeSizes`). When `volume_type` is omitted from the Terraform config, the provider creates a volume with `VolumeVolumeType("")`. The validation loop only counts volumes where `VolumeType == "l_ssd"` — so the volume's size (20 GB) is never counted, `localVolumeTotalSize` stays 0, and the check `0 < min_size` fails.
+
+**Fix applied**: Set `volumes_constraint.min_size` and `per_volume_constraint.l_ssd.min_size` to `0` for all server types. This makes validation pass: `0 >= 0`. The tradeoff is no minimum volume size enforcement, which is acceptable for a test mock. `max_size` remains accurate.
+
+**Alternative rejected**: Adding `volume_type = "l_ssd"` to `main.tf` — would fix the issue but changes the production config to work around a provider bug.
+
+### 2. ~~Server create response — image must be an object, not a string~~ RESOLVED
+
+**Fix applied**: `normalizeServerImage` in `handlers/instance.go:99-131` converts string image values to the expected object shape. Labels are resolved to UUIDs via `localImageID(label, zone, "instance_sbs")`. UUID strings are kept as-is. The enriched object is stored in the `data` blob so Get/List also return the correct shape. Tested by `TestCreateServerNormalizesImageLabelToObject` and `TestCreateServerNormalizesImageUUIDToObject`.
+
+### 3. ~~Server create response — `public_ips` must be an array of objects, not strings~~ RESOLVED
+
+**Fix applied**: `CreateServer` now unconditionally overwrites both fields on create:
+- `data["public_ips"] = []any{}`
+- `data["public_ip"] = nil`
+
+This guarantees provider-compatible types even if request JSON sends malformed values.
+
+**Tests**: `TestCreateServerOverridesMalformedPublicIPFields` verifies malformed input (`"public_ips": "bad-type"`, `"public_ip": "bad-type"`) is normalized in the response.
+
+**Affected file**: `repository/repository.go` — `CreateServer`
+
+### 4. ~~Server create response — `security_group` must be an object, not a string~~ RESOLVED
+
+**Fix applied**: `CreateServer` now runs `normalizeServerSecurityGroup` before persistence:
+1. String `"security_group"` is normalized to object shape: `{"id":"<sg_id>","name":""}`
+2. Object `"security_group"` is preserved (ensures `name` key exists)
+3. Absent/invalid/null `"security_group"` becomes `null`
+4. `security_group_id` is synced from normalized value so FK validation still occurs in SQLite
+
+**Tests**:
+- `TestCreateServerNormalizesSecurityGroupStringToObject`
+- `TestCreateServerRejectsUnknownSecurityGroupReference`
+
+**Affected file**: `handlers/instance.go` — `CreateServer`
+
+### 5. ~~Server user_data endpoint — stub returning empty list~~ RESOLVED
+
+**Fix applied**:
+1. Added route: `GET /instance/v1/zones/{zone}/servers/{server_id}/user_data`
+2. Added handler: `ListServerUserData` returning `{"user_data": []}` with 200 OK
+3. Handler validates server existence first and returns 404 for unknown `server_id`
+
+**Tests**:
+- `TestServerUserDataListEmpty`
+- `TestServerUserDataListNotFound`
+
+**Affected files**: `handlers/handlers.go`, `handlers/instance.go`, `handlers/handlers_test.go`
+
+### 6. ~~Server user_data PATCH — accept and discard cloud-init data~~ RESOLVED
+
+**Fix applied**:
+1. Added route: `r.Patch("/servers/{server_id}/user_data/{key}", app.SetServerUserData)`
+2. Handler validates server exists (404 if not), drains request body, returns 204 No Content
+3. Data is discarded — no storage needed for v1
+
+**Tests**:
+- `TestServerUserDataPatchAccepted` — sends cloud-init script, expects 204
+- `TestServerUserDataPatchNotFound` — unknown server_id returns 404
+
+**Affected files**: `handlers/handlers.go`, `handlers/instance.go`, `handlers/handlers_test.go`
+
+### 7. ~~Server create response — `volumes` must be a map of volume objects~~ RESOLVED
+
+**Fix applied**:
+1. `CreateServer` now unconditionally overwrites `data["volumes"]` with a valid root volume at key `"0"` (UUID `id`, name, size, volume_type, state, boot, zone), regardless of request body content.
+2. `GET /instance/v1/zones/{zone}/volumes/{volume_id}` remains implemented and resolves volumes from stored server data.
+
+**Tests**:
+- `TestCreateServerInjectsDefaultRootVolume`
+- `TestCreateServerOverridesProvidedVolumesWithRootVolume` (verifies request body `"volumes": {}` is overridden)
+- `TestGetVolumeFromServerRootVolume`
+- `TestGetVolumeNotFound`
+
+**Affected files**: `repository/repository.go`, `handlers/handlers_test.go`
+
+### 8. ~~Server action endpoint — accept poweroff/terminate before delete~~ RESOLVED
+
+**Fix applied**:
+1. Added route: `POST /instance/v1/zones/{zone}/servers/{server_id}/action`
+2. Added handler: `ServerAction`
+3. Handler validates server exists (404 if not), reads `"action"` from request, and returns:
+   `{"task":{"id":"<uuid>","description":"<action>","progress":100,"status":"success"}}`
+4. No server state mutation is performed (sufficient for mock destroy flow)
+
+**Tests**:
+- `TestServerActionAccepted`
+- `TestServerActionNotFound`
+
+**Affected files**: `handlers/handlers.go`, `handlers/instance.go`, `handlers/handlers_test.go`
+
+### 9. ~~Volume DELETE endpoint — needed for `terraform destroy`~~ RESOLVED
+
+**Fix applied**:
+1. Added route: `DELETE /instance/v1/zones/{zone}/volumes/{volume_id}`
+2. Added handler: `DeleteVolume` that returns `204 No Content` unconditionally
+3. Kept behavior idempotent/no-lookup, matching provider destroy flow after server deletion
+
+**Tests**:
+- `TestDeleteVolumeReturns204`
+- `TestDeleteVolumeAfterServerDelete`
+
+**Affected files**: `handlers/handlers.go`, `handlers/instance.go`, `handlers/handlers_test.go`
+
+### 10. ~~FK cascade rules — `terraform destroy` blocked by RESTRICT defaults~~ RESOLVED
+
+**Fix applied**:
+1. Updated schema FK actions:
+   - `instance_ips.server_id -> instance_servers(id) ON DELETE SET NULL`
+   - `instance_servers.security_group_id -> instance_security_groups(id) ON DELETE SET NULL`
+   - `instance_private_nics.server_id -> instance_servers(id) ON DELETE CASCADE`
+2. Added repository-side detach logic to keep JSON `data` blobs consistent with FK-side detach behavior:
+   - On server delete: IP `server_id` in JSON is set to `null`
+   - On security group delete: server `security_group` and `security_group_id` in JSON are set to `null`
+3. Kept server delete robust for older file-based DBs by deleting private NIC rows explicitly before deleting the server.
+
+**Tests**:
+- `TestDeleteServerDetachesIP`
+- `TestDeleteServerCascadesPrivateNICs`
+- `TestDeleteSecurityGroupDetachesServer`
+
+**Affected files**: `repository/repository.go`, `handlers/handlers_test.go`
