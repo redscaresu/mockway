@@ -10,6 +10,8 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 - `--port` — HTTP port (default: `8080`)
 - `--db` — SQLite database path (default: `:memory:` — ephemeral, like LocalStack). Use `--db ./mockway.db` for file-based debugging with `sqlite3` CLI.
 
+**OpenTofu and Terraform**: Both are fully supported. Mockway is an HTTP API mock — it doesn't know or care which client is calling it. Both OpenTofu and Terraform use the same `scaleway/scaleway` provider, which makes identical HTTP calls to `SCW_API_URL`. Point either tool at Mockway and it works the same way.
+
 **SQLite connection strategy**: `database/sql` pools multiple connections by default. With `:memory:`, each connection gets its own isolated database — breaking state sharing and FK enforcement. Fix: call `db.SetMaxOpenConns(1)` to force a single connection. This also ensures `PRAGMA foreign_keys = ON` (which is per-connection) stays active for all queries. For file-based `--db`, a single connection is also acceptable at Mockway's expected concurrency.
 
 ## Architecture
@@ -22,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-5 services, 15 resource types, 4 operations each (Create, Get, Delete, List) = ~60 handler methods + 3 admin endpoints. No S3 in v1.
+6 services + 1 legacy alias, 19 resource types, 4 operations each (Create, Get, Delete, List) = ~80 handler methods + 3 admin endpoints. No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -31,10 +33,16 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 | Load Balancer | `/lb/v1/zones/{zone}/` | lbs, frontends, backends, private-networks |
 | Kubernetes | `/k8s/v1/regions/{region}/` | clusters, pools |
 | RDB | `/rdb/v1/regions/{region}/` | instances, databases, users |
+| IAM | `/iam/v1alpha1/` | applications, api-keys, policies, ssh-keys |
+| Account (legacy) | `/account/v2alpha1/` | ssh-keys (alias → IAM ssh-keys state) |
 
-**Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
+**Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
 Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). No Update operations in v1.
+
+**IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
+
+**Account legacy shim**: The Scaleway provider has two SSH key resources: `scaleway_iam_ssh_key` (current, uses `/iam/v1alpha1/ssh-keys`) and `scaleway_account_ssh_key` (deprecated, uses `/account/v2alpha1/ssh-keys`). Existing configs may use either. Mockway supports both paths as aliases to the **same underlying `iam_ssh_keys` table**. Account routes delegate to the same repository methods as IAM SSH key routes — one canonical storage, two entry points.
 
 **Full route patterns** (needed if hand-writing routes — codegen generates these automatically):
 
@@ -70,8 +78,18 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | DELETE | `/rdb/v1/regions/{region}/instances/{instance_id}/databases/{db_name}` | Delete database |
 | POST/GET | `/rdb/v1/regions/{region}/instances/{instance_id}/users` | Create/List users |
 | DELETE | `/rdb/v1/regions/{region}/instances/{instance_id}/users/{user_name}` | Delete user |
+| POST/GET | `/iam/v1alpha1/applications` | Create/List IAM applications |
+| GET/DELETE | `/iam/v1alpha1/applications/{application_id}` | Get/Delete IAM application |
+| POST/GET | `/iam/v1alpha1/api-keys` | Create/List API keys |
+| GET/DELETE | `/iam/v1alpha1/api-keys/{access_key}` | Get/Delete API key |
+| POST/GET | `/iam/v1alpha1/policies` | Create/List IAM policies |
+| GET/DELETE | `/iam/v1alpha1/policies/{policy_id}` | Get/Delete IAM policy |
+| POST/GET | `/iam/v1alpha1/ssh-keys` | Create/List SSH keys |
+| GET/DELETE | `/iam/v1alpha1/ssh-keys/{ssh_key_id}` | Get/Delete SSH key |
+| POST/GET | `/account/v2alpha1/ssh-keys` | Create/List SSH keys (legacy alias → IAM ssh-keys) |
+| GET/DELETE | `/account/v2alpha1/ssh-keys/{ssh_key_id}` | Get/Delete SSH key (legacy alias → IAM ssh-keys) |
 
-Note: These routes are based on the Scaleway API structure. The echo server smoke test (Build Order step 1) will empirically confirm which exact paths the OpenTofu provider hits. Adjust if the provider uses different paths.
+Note: These routes are based on the Scaleway API structure. The echo server smoke test (Build Order step 1) will empirically confirm which exact paths the provider hits. Adjust if the provider uses different paths.
 
 ## HTTP Router
 
@@ -90,6 +108,7 @@ Scaleway publishes OpenAPI 3.1 YAML specs per service. Use **oapi-codegen** to g
 | Load Balancer | `https://developers.scaleway.com/static/scaleway.lb.v1.Api.yml` |
 | Kubernetes | `https://developers.scaleway.com/static/scaleway.k8s.v1.Api.yml` |
 | RDB | `https://developers.scaleway.com/static/scaleway.rdb.v1.Api.yml` |
+| IAM | `https://developers.scaleway.com/static/scaleway.iam.v1alpha1.Api.yml` |
 
 **Pipeline**:
 1. Download specs → `specs/` directory
@@ -122,6 +141,7 @@ mockway/
 │   ├── lb.go                     # Load Balancer handlers (lbs, frontends, backends, private_networks)
 │   ├── k8s.go                    # Kubernetes handlers (clusters, pools)
 │   ├── rdb.go                    # RDB handlers (instances, databases, users)
+│   ├── iam.go                    # IAM handlers (applications, api_keys, policies, ssh_keys)
 │   ├── admin.go                  # /mock/reset, /mock/state handlers
 │   └── handlers_test.go          # Integration tests (HTTP round-trips)
 ├── models/
@@ -189,6 +209,23 @@ func (app *Application) RegisterRoutes(r chi.Router) {
             // ... ips, security_groups, private_nics
         })
         // VPC, LB, K8s, RDB routes...
+
+        // IAM (organisation-scoped — no zone/region)
+        r.Route("/iam/v1alpha1", func(r chi.Router) {
+            r.Post("/applications", app.CreateIAMApplication)
+            r.Get("/applications", app.ListIAMApplications)
+            r.Get("/applications/{application_id}", app.GetIAMApplication)
+            r.Delete("/applications/{application_id}", app.DeleteIAMApplication)
+            // ... api-keys, policies, ssh-keys
+        })
+
+        // Account (legacy alias — same handlers as IAM SSH keys)
+        r.Route("/account/v2alpha1", func(r chi.Router) {
+            r.Post("/ssh-keys", app.CreateIAMSSHKey)
+            r.Get("/ssh-keys", app.ListIAMSSHKeys)
+            r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
+            r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
+        })
     })
 }
 ```
@@ -302,13 +339,36 @@ CREATE TABLE rdb_users (
     data JSON NOT NULL,
     PRIMARY KEY (instance_id, name)
 );
+
+-- IAM (organisation-scoped — no zone/region column)
+CREATE TABLE iam_applications (
+    id TEXT PRIMARY KEY,
+    data JSON NOT NULL
+);
+
+CREATE TABLE iam_api_keys (
+    access_key TEXT PRIMARY KEY,
+    application_id TEXT REFERENCES iam_applications(id),
+    data JSON NOT NULL
+);
+
+CREATE TABLE iam_policies (
+    id TEXT PRIMARY KEY,
+    application_id TEXT REFERENCES iam_applications(id),
+    data JSON NOT NULL
+);
+
+CREATE TABLE iam_ssh_keys (
+    id TEXT PRIMARY KEY,
+    data JSON NOT NULL
+);
 ```
 
 The JSON `data` column holds the full API response shape — flexible, no migrations when Scaleway adds optional fields.
 
 **Data flow for Create**:
 1. Parse request body JSON
-2. Generate UUID for `id` (for UUID-based resources) or use the provided `name` (for RDB databases/users)
+2. Generate UUID for `id` (for UUID-based resources), use the provided `name` (for RDB databases/users), or generate `access_key` (for IAM API keys — `SCW` + 17 random chars)
 3. Inject `id` + server-generated fields into the JSON (see table below)
 4. Extract FK fields (e.g., `vpc_id`, `server_id`) from JSON into dedicated columns for SQLite FK enforcement
 5. Store the full enriched JSON in the `data` column
@@ -329,6 +389,10 @@ The JSON `data` column holds the full API response shape — flexible, no migrat
 | K8s pools | `"status": "ready"`, `"created_at": "<RFC3339>"`, `"updated_at": "<RFC3339>"` |
 | RDB instances | `"status": "ready"`, `"created_at": "<RFC3339>"`, `"endpoints": [...]` (see RDB endpoint transformation below) |
 | RDB databases/users | (no extra fields beyond what's in the request — identified by name, not UUID) |
+| IAM applications | `"created_at": "<RFC3339>"`, `"updated_at": "<RFC3339>"` |
+| IAM API keys | `"access_key": "SCW<random 17 chars>"`, `"secret_key": "<uuid>"` (returned on create only — omit from Get/List), `"created_at": "<RFC3339>"`, `"updated_at": "<RFC3339>"` |
+| IAM policies | `"created_at": "<RFC3339>"`, `"updated_at": "<RFC3339>"` |
+| IAM SSH keys | `"created_at": "<RFC3339>"`, `"updated_at": "<RFC3339>"`, `"fingerprint": "256 SHA256:<random>"` |
 
 Timestamp format: RFC 3339 (`time.Now().UTC().Format(time.RFC3339)`). Use the same value for both `created_at` and `updated_at` on create. Fake IPs: generate deterministically or randomly — consistency doesn't matter for mock testing, just uniqueness.
 
@@ -356,6 +420,8 @@ In both cases, `init_endpoints` is **not** stored — it's consumed on create an
 1. Query the `data` column from SQLite
 2. Return it directly as the response body — no transformation needed
 
+**Exception**: IAM API keys. The `secret_key` is stored in the `data` blob (so create can return it) but must be **stripped** before returning from Get and List. Parse the JSON, delete the `"secret_key"` key, return the rest. All other fields (including `user_id` or `application_id`) are returned unchanged. This is the only Get/List transformation in Mockway.
+
 ## Referential Integrity
 
 Mockway must enforce the same referential integrity as the real Scaleway API:
@@ -368,6 +434,12 @@ Mockway must enforce the same referential integrity as the real Scaleway API:
 SQLite enforces FKs natively (`PRAGMA foreign_keys = ON`). Use this for most integrity checks. For cases where the FK is inside the JSON `data` blob, validate programmatically in the handler before inserting:
 
 - **RDB instance create**: if the request body contains `"init_endpoints": [{"private_network": {"id": "<pn_id>"}}]`, the handler must query the `private_networks` table to verify `<pn_id>` exists before inserting. Return 404 if not found. This is handler-level validation because `rdb_instances` has no explicit `private_network_id` column — the reference lives only inside the JSON data blob.
+
+**IAM-specific FK rules**:
+- **API key create**: either `application_id` or `user_id` must be provided (mutually exclusive). If `application_id` is provided, it must reference an existing IAM application → 404 if not found. If `user_id` is provided, accept any non-empty value (Mockway doesn't mock users). If neither is provided → 400 Bad Request. The PK is `access_key` (server-generated `SCW` + 17 random chars), not a UUID. The `secret_key` is stored in the `data` blob but stripped on Get/List (see Data flow exception above). **`user_id` persistence**: `user_id` is stored only in the JSON `data` blob — no dedicated column, no FK enforcement (Mockway has no users table). When provided, it appears in Get, List, and admin state responses. The `application_id` column in `iam_api_keys` is set to `NULL` when the API key belongs to a user instead of an application.
+- **Policy create**: `application_id` is optional. If provided, must reference an existing IAM application → 404 if not found.
+- **Delete application**: reject if API keys or policies still reference it → 409 Conflict.
+- **SSH keys**: standalone — no FK to any other resource. Accessible via both `/iam/v1alpha1/ssh-keys` and `/account/v2alpha1/ssh-keys` (same underlying state).
 
 ## Key Resource Relationships
 
@@ -392,6 +464,13 @@ Load Balancer
 K8s Cluster
  ├── K8s Node Pool
  └── Private Network (optional)
+
+IAM Application
+ ├── IAM API Key (access_key is the PK, not UUID; application_id optional)
+ └── IAM Policy (optional application_id FK)
+
+IAM SSH Key (standalone — no parent dependency)
+ └── Also accessible via Account legacy routes (same state)
 ```
 
 ## Admin State API
@@ -401,7 +480,7 @@ These endpoints are NOT part of the Scaleway API — they're Mockway-specific fo
 **Endpoints**:
 - `POST /mock/reset` — wipe all state (disable FKs, delete all rows, re-enable FKs)
 - `GET /mock/state` — full resource graph as JSON
-- `GET /mock/state/{service}` — single service state (e.g., `/mock/state/instance`). Valid service names: `instance`, `vpc`, `lb`, `k8s`, `rdb`. Unknown service → `404 Not Found` with `{"message": "unknown service", "type": "not_found"}`.
+- `GET /mock/state/{service}` — single service state (e.g., `/mock/state/instance`). Valid service names: `instance`, `vpc`, `lb`, `k8s`, `rdb`, `iam`. Unknown service → `404 Not Found` with `{"message": "unknown service", "type": "not_found"}`.
 
 ### `GET /mock/state` Response Schema
 
@@ -473,11 +552,29 @@ This schema is a **versioned contract** — InfraFactory depends on this exact s
     "users": [
       {"instance_id": "uuid", "name": "appuser"}
     ]
+  },
+  "iam": {
+    "applications": [
+      {"id": "uuid", "name": "my-app", "description": "CI/CD application"}
+    ],
+    "api_keys": [
+      {"access_key": "SCWxxxxxxxxxxxxxxxxx", "application_id": "uuid",
+       "description": "deploy key"}
+    ],
+    "policies": [
+      {"id": "uuid", "name": "full-access", "application_id": "uuid"}
+    ],
+    "ssh_keys": [
+      {"id": "uuid", "name": "my-laptop",
+       "public_key": "ssh-ed25519 AAAA..."}
+    ]
   }
 }
 ```
 
 This mirrors Scaleway API response shapes. Empty arrays for resource types with no instances (never omit a key — always return the full structure with empty arrays).
+
+**Account legacy shim and admin state**: There is no separate `"account"` section. SSH keys created via `/account/v2alpha1/ssh-keys` are stored in and returned from the `"iam"."ssh_keys"` array. The Account routes are purely a routing alias — the admin state has one canonical shape. `/mock/state/account` is **not** a valid service name (returns 404).
 
 ## Build Order
 
@@ -485,13 +582,13 @@ This mirrors Scaleway API response shapes. Empty arrays for resource types with 
 
 1. Create a minimal HTTP server on port 8080
 2. Mount a catch-all handler that logs the request method, path, and headers
-3. Point the Scaleway OpenTofu provider at it (`SCW_API_URL=http://localhost:8080`) with fake credentials:
+3. Point the Scaleway OpenTofu/Terraform provider at it (`SCW_API_URL=http://localhost:8080`) with fake credentials:
    ```
    SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX
    SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000
    SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000
    ```
-4. Run `tofu plan` for a simple Scaleway config and observe which API paths the provider hits
+4. Run `tofu plan` (or `terraform plan`) for a simple Scaleway config and observe which API paths the provider hits
 5. This proves `SCW_API_URL` routes all services through a single URL before writing real handlers
 
 Then build incrementally:
@@ -501,6 +598,7 @@ Then build incrementally:
 4. RDB (instances, databases, users)
 5. Load Balancer (LBs, frontends, backends, private networks)
 6. Kubernetes (clusters, pools)
+7. IAM (applications, API keys, policies, SSH keys) + Account legacy SSH key alias — no dependencies on other services, can be built in any order after step 1
 
 ## Testing
 
@@ -604,6 +702,13 @@ Full HTTP round-trips against `httptest.NewServer`. Tests the contract: correct 
 - Admin reset: create resources → `POST /mock/reset` (204) → `GET /mock/state` returns all empty arrays
 - Admin state structure: create resources → `GET /mock/state` → verify JSON matches the versioned contract schema
 - Cross-service flow: create VPC → create PN → create server → create private NIC → `GET /mock/state` → verify all relationships
+- IAM application lifecycle: Create → Get → List → Delete
+- IAM API key lifecycle: create application → create API key with `application_id` → Get → List → Delete. Also: create API key with `user_id` (no application) → verify works
+- IAM API key FK: create API key with non-existent `application_id` → 404. Delete application with attached API keys → 409
+- IAM policy lifecycle: Create (with and without `application_id`) → Get → List → Delete
+- IAM SSH key lifecycle via `/iam/v1alpha1/ssh-keys`: Create → Get → List → Delete
+- Account SSH key compatibility: create via `/account/v2alpha1/ssh-keys` → Get via `/iam/v1alpha1/ssh-keys/{id}` (cross-path). Create via IAM → Get via Account (reverse cross-path). List via either path returns same results
+- IAM admin state: create IAM resources → `GET /mock/state/iam` → verify all 4 resource type arrays present
 
 **Pattern**:
 ```go
@@ -736,7 +841,7 @@ Scaleway APIs return responses wrapped in a consistent format. Follow these patt
 | Delete | `204 No Content` | Empty |
 | `POST /mock/reset` | `204 No Content` | Empty |
 | `GET /mock/state` | `200 OK` | Full state JSON |
-| `GET /mock/state/{service}` | `200 OK` | Single service state JSON (valid: `instance`, `vpc`, `lb`, `k8s`, `rdb`; unknown → 404) |
+| `GET /mock/state/{service}` | `200 OK` | Single service state JSON (valid: `instance`, `vpc`, `lb`, `k8s`, `rdb`, `iam`; unknown → 404) |
 
 **Error codes**:
 
@@ -758,9 +863,13 @@ Scaleway APIs return responses wrapped in a consistent format. Follow these patt
 {"servers": [...], "total_count": 2}
 ```
 
-**Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
+**Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
-Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases and users which are identified by name within their parent instance.
+Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
+
+## Known Limitations
+
+- **No state persistence across runs**: `tofu plan` / `terraform plan` against Mockway always shows all resources as "to be created" because Mockway starts with empty state (`:memory:` default). This is expected — each run is a clean environment. Use `--db ./mockway.db` for file-backed persistence if needed between runs.
 
 ## Distribution
 
@@ -780,5 +889,5 @@ GoReleaser → Go binaries + Docker image + Homebrew tap.
 - Repository methods return domain errors (`ErrNotFound`, `ErrConflict` from `models/`), handlers map to HTTP status codes
 - Use `database/sql` with `modernc.org/sqlite` (pure Go — no CGo, simpler cross-compilation via GoReleaser)
 - `repository.New()` must call `db.SetMaxOpenConns(1)` and `PRAGMA foreign_keys = ON` immediately after `sql.Open()` (see SQLite connection strategy above)
-- Generate UUIDs for all resource IDs on create (except RDB databases and users — identified by name)
+- Generate UUIDs for all resource IDs on create (except RDB databases/users — identified by name, and IAM API keys — identified by server-generated `access_key`)
 - Return the created resource in the response body (matching Scaleway's behavior)
