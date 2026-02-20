@@ -39,7 +39,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both are implemented. Marketplace needs 2 endpoints for image label resolution (see Pending Fixes): `GET /marketplace/v2/local-images` (list, filtered by `image_label`, `zone`, `type` query params) and `GET /marketplace/v2/local-images/{local_image_id}` (get by ID). The provider calls these to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without these, the provider can't resolve non-UUID image references and server creation fails.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). Why these fields matter: the provider reads `volumes_constraint.max_size` to validate total local volume size, and reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes. Both are implemented. Marketplace has 2 endpoints for image label resolution: `GET /marketplace/v2/local-images` (list, filtered by `image_label`, `zone`, `type` query params) and `GET /marketplace/v2/local-images/{local_image_id}` (get by ID). The provider calls these to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without these, the provider can't resolve non-UUID image references and server creation fails.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -195,7 +195,7 @@ func run() error {
     return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
 
-// handlers/handlers.go — TARGET STATE (Marketplace routes are pending, see Pending Fixes)
+// handlers/handlers.go
 type Application struct {
     repo *repository.Repository
 }
@@ -1206,59 +1206,6 @@ writeJSON(w, http.StatusOK, out)
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
-
-## Pending Fixes
-
-1. **Marketplace local-images endpoints**: The provider calls `GET /marketplace/v2/local-images` to resolve image labels (e.g., `ubuntu_noble`) to zone-specific image UUIDs during server creation. Without this, non-UUID image references fail. Two endpoints needed:
-
-   **`GET /marketplace/v2/local-images`** — List local images, filtered by query params:
-   - `image_label` — e.g., `ubuntu_noble` (provider normalises hyphens to underscores)
-   - `zone` — e.g., `fr-par-1`
-   - `type` — `instance_local` or `instance_sbs` (derived from volume type: `l_ssd`/`b_ssd` → `instance_local`, `sbs_volume` or default → `instance_sbs`)
-   - `page`, `page_size`, `order_by` — pagination (Mockway can ignore, return all in one page)
-
-   Response shape:
-   ```json
-   {
-     "local_images": [
-       {
-         "id": "<uuid>",
-         "compatible_commercial_types": ["DEV1-S", "DEV1-M", "DEV1-L", "GP1-XS", "GP1-S", "GP1-M"],
-         "arch": "x86_64",
-         "zone": "fr-par-1",
-         "label": "ubuntu_noble",
-         "type": "instance_sbs"
-       }
-     ],
-     "total_count": 1
-   }
-   ```
-
-   The `compatible_commercial_types` field is critical — the SDK iterates the list and checks if the uppercased commercial type is present. If not, resolution fails even if the label matches.
-
-   **Implementation approach**: Static catalog (like products/servers). Return a hardcoded set of common image labels (`ubuntu_noble`, `ubuntu_jammy`, `debian_bookworm`, `centos_stream_9`). Each entry covers all supported commercial types and both `instance_local` and `instance_sbs` types. Filter by query params. Generate deterministic UUIDs per (label, zone, type) combination so the same query always returns the same image UUID.
-
-   **`GET /marketplace/v2/local-images/{local_image_id}`** — Get a single local image by its UUID. Called during plan diffs when the provider compares a server's current image to the user-specified label. Response shape is the same object from the list (without the array wrapper):
-   ```json
-   {
-     "id": "<uuid>",
-     "compatible_commercial_types": ["DEV1-S", "DEV1-M", ...],
-     "arch": "x86_64",
-     "zone": "fr-par-1",
-     "label": "ubuntu_noble",
-     "type": "instance_sbs"
-   }
-   ```
-
-   Returns 404 if the ID doesn't match any known image.
-
-   **Tests required**:
-   - List with `image_label=ubuntu_noble&zone=fr-par-1&type=instance_sbs` returns 200 with matching entry
-   - List entry has `compatible_commercial_types` containing `DEV1-S`
-   - List with unknown label returns 200 with empty `local_images` array
-   - Get by ID returns 200 with correct label and zone
-   - Get with unknown ID returns 404
-   - Pagination params (`page=1`) accepted and ignored
 
 ## Known Limitations
 

@@ -9,6 +9,8 @@ Mockway runs as a single Go binary, persists resource state in SQLite, and expos
 - SQLite-backed state (`:memory:` by default, file DB optional)
 - Foreign-key integrity checks (404 on bad references, 409 on dependent deletes)
 - Admin inspection/reset API under `/mock/*`
+- Marketplace image label resolution (e.g., `ubuntu_noble` → UUID)
+- Catch-all 501 handler logs unimplemented routes for easy discovery
 - Echo mode for provider path discovery
 
 ## Install
@@ -78,15 +80,22 @@ Missing auth response:
 
 ## Services and Routes
 Implemented services:
-- Instance (`/instance/v1/zones/{zone}`)
-- VPC (`/vpc/v1/regions/{region}`)
-- Load Balancer (`/lb/v1/zones/{zone}`)
-- Kubernetes (`/k8s/v1/regions/{region}`)
-- RDB (`/rdb/v1/regions/{region}`)
+- Instance (`/instance/v1/zones/{zone}`) — servers, IPs, security groups, private NICs, products catalog
+- VPC (`/vpc/v1/regions/{region}`) — VPCs, private networks
+- Load Balancer (`/lb/v1/zones/{zone}`) — LBs, frontends, backends, private network attachments
+- Kubernetes (`/k8s/v1/regions/{region}`) — clusters, pools
+- RDB (`/rdb/v1/regions/{region}`) — instances, databases, users
+- IAM (`/iam/v1alpha1/`) — applications, API keys, policies, SSH keys
+- Marketplace (`/marketplace/v2/`) — local image label resolution (e.g., `ubuntu_noble` → image UUID)
+- Account (`/account/v2alpha1/`) — SSH keys (legacy alias → IAM)
 
 Each resource supports Create/Get/List/Delete, except:
 - RDB databases/users: Create/List/Delete (no Get)
 - LB private-network attachment: Attach/List/Detach
+- Security groups: also Patch (update), PUT/GET rules
+- IAM rules: list only (stub, returns empty)
+- Marketplace: list and get local images (static catalog)
+- Instance products/servers: list only (static catalog)
 
 ## Response Conventions
 Success:
@@ -112,7 +121,7 @@ GET  /mock/state
 GET  /mock/state/{service}
 ```
 
-`{service}` supports: `instance`, `vpc`, `lb`, `k8s`, `rdb`.
+`{service}` supports: `instance`, `vpc`, `lb`, `k8s`, `rdb`, `iam`.
 
 ## Quick Example
 ```bash
