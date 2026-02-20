@@ -893,7 +893,7 @@ func TestFKRejectionHTTP(t *testing.T) {
 
 Table-driven tests that validate every endpoint returns the correct response structure. These prevent regressions where Mockway's response format drifts from the real Scaleway API (e.g., missing wrapper keys, wrong list key names).
 
-**Why**: The Scaleway provider deserializes responses into typed structs. If the JSON shape is wrong (e.g., flat `{"id": "..."}` instead of wrapped `{"server": {"id": "..."}}`), the provider panics with a nil dereference. These tests catch that class of bug at the unit level.
+**Why**: The Scaleway provider deserializes responses into typed structs. If the JSON shape is wrong (e.g., flat `{"id": "..."}` instead of wrapped `{"server": {"id": "..."}}`), the provider panics with a nil dereference. These tests catch that class of bug at the integration level.
 
 **`TestCreateGetResponseWrapping`** — validates Create and Get responses have the correct wrapper structure:
 
