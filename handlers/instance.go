@@ -18,7 +18,7 @@ func (app *Application) CreateServer(w http.ResponseWriter, r *http.Request) {
 		writeCreateError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"server": out})
 }
 
 func (app *Application) GetServer(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +27,7 @@ func (app *Application) GetServer(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"server": out})
 }
 
 func (app *Application) ListServers(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +58,7 @@ func (app *Application) CreateIP(w http.ResponseWriter, r *http.Request) {
 		writeCreateError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"ip": out})
 }
 
 func (app *Application) GetIP(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +67,7 @@ func (app *Application) GetIP(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"ip": out})
 }
 
 func (app *Application) ListIPs(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +98,7 @@ func (app *Application) CreateSecurityGroup(w http.ResponseWriter, r *http.Reque
 		writeCreateError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"security_group": out})
 }
 
 func (app *Application) GetSecurityGroup(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +107,7 @@ func (app *Application) GetSecurityGroup(w http.ResponseWriter, r *http.Request)
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"security_group": out})
 }
 
 func (app *Application) ListSecurityGroups(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +127,20 @@ func (app *Application) DeleteSecurityGroup(w http.ResponseWriter, r *http.Reque
 	writeNoContent(w)
 }
 
+func (app *Application) UpdateSecurityGroup(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateSecurityGroup(chi.URLParam(r, "sg_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"security_group": out})
+}
+
 func (app *Application) CreatePrivateNIC(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
@@ -138,7 +152,7 @@ func (app *Application) CreatePrivateNIC(w http.ResponseWriter, r *http.Request)
 		writeCreateError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"private_nic": out})
 }
 
 func (app *Application) GetPrivateNIC(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +161,7 @@ func (app *Application) GetPrivateNIC(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"private_nic": out})
 }
 
 func (app *Application) ListPrivateNICs(w http.ResponseWriter, r *http.Request) {

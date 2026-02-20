@@ -362,6 +362,26 @@ func (r *Repository) deleteBy(table, whereClause string, args ...any) error {
 	return nil
 }
 
+func (r *Repository) updateJSONByID(table, idColumn, id string, data map[string]any) error {
+	b, err := marshalData(data)
+	if err != nil {
+		return err
+	}
+	q := fmt.Sprintf("UPDATE %s SET data = ? WHERE %s = ?", table, idColumn)
+	res, err := r.db.Exec(q, b, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return nil
+}
+
 func (r *Repository) createSimple(table, scopeCol, scopeVal string, data map[string]any, extra ...colVal) (map[string]any, error) {
 	data = cloneMap(data)
 	id := newID()
@@ -425,6 +445,24 @@ func (r *Repository) ListSecurityGroups(zone string) ([]map[string]any, error) {
 }
 func (r *Repository) DeleteSecurityGroup(id string) error {
 	return r.deleteBy("instance_security_groups", "id = ?", id)
+}
+
+func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_security_groups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 
 func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]any, error) {

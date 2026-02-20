@@ -147,7 +147,7 @@ func (app *Application) ListLBPrivateNetworks(w http.ResponseWriter, r *http.Req
 		writeDomainError(w, err)
 		return
 	}
-	writeList(w, "private_networks", items)
+	writeList(w, "private_network", items)
 }
 
 func (app *Application) DeleteLBPrivateNetwork(w http.ResponseWriter, r *http.Request) {

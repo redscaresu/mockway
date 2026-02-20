@@ -24,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-6 services + 1 legacy alias, 19 resource types, 4 operations each (Create, Get, Delete, List) = ~80 handler methods + 3 admin endpoints. No S3 in v1.
+6 services + 1 legacy alias, 19 resource types. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update); IAM has an additional rules list endpoint. ~82 handler methods + 3 admin endpoints. No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -38,7 +38,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). No Update operations in v1.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update) — the provider uses this to set inbound/outbound rules after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -53,7 +53,7 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | POST/GET | `/instance/v1/zones/{zone}/ips` | Create/List IPs |
 | GET/DELETE | `/instance/v1/zones/{zone}/ips/{ip_id}` | Get/Delete IP |
 | POST/GET | `/instance/v1/zones/{zone}/security_groups` | Create/List security groups |
-| GET/DELETE | `/instance/v1/zones/{zone}/security_groups/{sg_id}` | Get/Delete security group |
+| GET/PATCH/DELETE | `/instance/v1/zones/{zone}/security_groups/{sg_id}` | Get/Update/Delete security group |
 | POST/GET | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics` | Create/List private NICs |
 | GET/DELETE | `/instance/v1/zones/{zone}/servers/{server_id}/private_nics/{nic_id}` | Get/Delete private NIC |
 | POST/GET | `/vpc/v1/regions/{region}/vpcs` | Create/List VPCs |
@@ -84,6 +84,7 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 | GET/DELETE | `/iam/v1alpha1/api-keys/{access_key}` | Get/Delete API key |
 | POST/GET | `/iam/v1alpha1/policies` | Create/List IAM policies |
 | GET/DELETE | `/iam/v1alpha1/policies/{policy_id}` | Get/Delete IAM policy |
+| GET | `/iam/v1alpha1/rules` | List IAM rules (filtered by `policy_id` query param) |
 | POST/GET | `/iam/v1alpha1/ssh-keys` | Create/List SSH keys |
 | GET/DELETE | `/iam/v1alpha1/ssh-keys/{ssh_key_id}` | Get/Delete SSH key |
 | POST/GET | `/account/v2alpha1/ssh-keys` | Create/List SSH keys (legacy alias → IAM ssh-keys) |
@@ -214,6 +215,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
             r.Post("/security_groups", app.CreateSecurityGroup)
             r.Get("/security_groups", app.ListSecurityGroups)
             r.Get("/security_groups/{sg_id}", app.GetSecurityGroup)
+            r.Patch("/security_groups/{sg_id}", app.UpdateSecurityGroup)
             r.Delete("/security_groups/{sg_id}", app.DeleteSecurityGroup)
 
             r.Post("/servers/{server_id}/private_nics", app.CreatePrivateNIC)
@@ -297,6 +299,8 @@ func (app *Application) RegisterRoutes(r chi.Router) {
             r.Get("/policies", app.ListIAMPolicies)
             r.Get("/policies/{policy_id}", app.GetIAMPolicy)
             r.Delete("/policies/{policy_id}", app.DeleteIAMPolicy)
+
+            r.Get("/rules", app.ListIAMRules)
 
             r.Post("/ssh-keys", app.CreateIAMSSHKey)
             r.Get("/ssh-keys", app.ListIAMSSHKeys)
@@ -1147,6 +1151,19 @@ writeJSON(w, http.StatusOK, out)
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
+
+## Pending Fixes
+
+These are missing endpoints that the Scaleway provider requires during `tofu apply` / `terraform apply`.
+
+1. **Security group PATCH**: The provider sends `PATCH /instance/v1/zones/{zone}/security_groups/{sg_id}` to update inbound/outbound rules after creation. Mockway currently returns 405 Method Not Allowed. Needs: implementation in actual codebase — handler (`UpdateSecurityGroup`) that merges PATCH body into existing resource (wrapped response: `{"security_group": {...}}`), repository `UpdateSecurityGroup` method. Tests required:
+   - PATCH returns 200 with updated fields merged into existing resource
+   - PATCH on non-existent ID returns 404
+   - GET after PATCH reflects the updated fields
+
+2. **IAM policy rules list**: The provider sends `GET /iam/v1alpha1/rules?policy_id={id}` to list a policy's rules after creation. Mockway currently returns 404. Needs: implementation in actual codebase — handler (`ListIAMRules`) that returns `{"rules": [], "total_count": 0}` (empty list is sufficient — Mockway doesn't model individual rules). Tests required:
+   - GET `/iam/v1alpha1/rules?policy_id={id}` returns 200 with `{"rules": [], "total_count": 0}`
+   - GET `/iam/v1alpha1/rules` without `policy_id` returns 200 with empty list
 
 ## Known Limitations
 

@@ -41,6 +41,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/security_groups", app.CreateSecurityGroup)
 			r.Get("/security_groups", app.ListSecurityGroups)
 			r.Get("/security_groups/{sg_id}", app.GetSecurityGroup)
+			r.Patch("/security_groups/{sg_id}", app.UpdateSecurityGroup)
 			r.Delete("/security_groups/{sg_id}", app.DeleteSecurityGroup)
 
 			r.Post("/servers/{server_id}/private_nics", app.CreatePrivateNIC)
@@ -124,6 +125,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/policies", app.ListIAMPolicies)
 			r.Get("/policies/{policy_id}", app.GetIAMPolicy)
 			r.Delete("/policies/{policy_id}", app.DeleteIAMPolicy)
+			r.Get("/rules", app.ListIAMRules)
 
 			r.Post("/ssh-keys", app.CreateIAMSSHKey)
 			r.Get("/ssh-keys", app.ListIAMSSHKeys)

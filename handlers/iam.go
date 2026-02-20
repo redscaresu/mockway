@@ -141,6 +141,10 @@ func (app *Application) DeleteIAMPolicy(w http.ResponseWriter, r *http.Request) 
 	writeNoContent(w)
 }
 
+func (app *Application) ListIAMRules(w http.ResponseWriter, _ *http.Request) {
+	writeList(w, "rules", []map[string]any{})
+}
+
 func (app *Application) CreateIAMSSHKey(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {

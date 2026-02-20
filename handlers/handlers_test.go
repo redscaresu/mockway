@@ -1,6 +1,8 @@
 package handlers_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,14 +35,16 @@ func TestInstanceServerLifecycle(t *testing.T) {
 		map[string]any{"name": "web-1", "commercial_type": "DEV1-S"},
 	)
 	require.Equal(t, 200, status)
-	serverID := body["id"].(string)
+	server := unwrapInstanceResource(body)
+	serverID := server["id"].(string)
 	require.NotEmpty(t, serverID)
 
 	status, body = testutil.DoGet(t, ts,
 		"/instance/v1/zones/fr-par-1/servers/"+serverID,
 	)
 	require.Equal(t, 200, status)
-	require.Equal(t, "web-1", body["name"])
+	server = unwrapInstanceResource(body)
+	require.Equal(t, "web-1", server["name"])
 
 	status, body = testutil.DoList(t, ts,
 		"/instance/v1/zones/fr-par-1/servers",
@@ -76,7 +80,7 @@ func TestCrossServiceFlow(t *testing.T) {
 		map[string]any{"name": "web-1", "commercial_type": "DEV1-S"},
 	)
 	_, nic := testutil.DoCreate(t, ts,
-		"/instance/v1/zones/fr-par-1/servers/"+srv["id"].(string)+"/private_nics",
+		"/instance/v1/zones/fr-par-1/servers/"+resourceID(srv)+"/private_nics",
 		map[string]any{"private_network_id": pn["id"]},
 	)
 
@@ -84,7 +88,7 @@ func TestCrossServiceFlow(t *testing.T) {
 	instance := state["instance"].(map[string]any)
 	nics := instance["private_nics"].([]any)
 	require.Len(t, nics, 1)
-	require.Equal(t, nic["id"], nics[0].(map[string]any)["id"])
+	require.Equal(t, resourceID(nic), nics[0].(map[string]any)["id"])
 }
 
 func TestFKRejectionHTTP(t *testing.T) {
@@ -106,6 +110,51 @@ func TestFKRejectionHTTP(t *testing.T) {
 	require.Equal(t, 409, status)
 }
 
+func TestSecurityGroupPatchLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups",
+		map[string]any{"name": "sg", "inbound_default_policy": "drop"},
+	)
+	require.Equal(t, 200, status)
+	sgID := resourceID(created)
+
+	status, patched := doPatch(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups/"+sgID,
+		map[string]any{
+			"inbound_default_policy":  "accept",
+			"outbound_default_policy": "accept",
+		},
+	)
+	require.Equal(t, 200, status)
+	sg := unwrapInstanceResource(patched)
+	require.Equal(t, sgID, sg["id"])
+	require.Equal(t, "sg", sg["name"])
+	require.Equal(t, "accept", sg["inbound_default_policy"])
+	require.Equal(t, "accept", sg["outbound_default_policy"])
+
+	status, got := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/security_groups/"+sgID)
+	require.Equal(t, 200, status)
+	sg = unwrapInstanceResource(got)
+	require.Equal(t, "accept", sg["inbound_default_policy"])
+	require.Equal(t, "accept", sg["outbound_default_policy"])
+}
+
+func TestSecurityGroupPatchNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := doPatch(t, ts,
+		"/instance/v1/zones/fr-par-1/security_groups/non-existent",
+		map[string]any{"inbound_default_policy": "accept"},
+	)
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "resource not found", body["message"])
+}
+
 func TestDeleteConflictForMultipleDependencies(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -115,10 +164,10 @@ func TestDeleteConflictForMultipleDependencies(t *testing.T) {
 		"name": "pn", "vpc_id": vpc["id"],
 	})
 	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "s"})
-	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string)+"/private_nics", map[string]any{
+	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server)+"/private_nics", map[string]any{
 		"private_network_id": pn["id"],
 	})
-	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string))
+	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server))
 	require.Equal(t, 409, status)
 
 	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "k"})
@@ -317,6 +366,24 @@ func TestIAMPolicyLifecycle(t *testing.T) {
 	require.Equal(t, 204, status)
 }
 
+func TestIAMRulesListEndpoint(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, pol := testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{"name": "p1"})
+	policyID := pol["id"].(string)
+
+	status, body := testutil.DoList(t, ts, "/iam/v1alpha1/rules?policy_id="+policyID)
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
+	require.Len(t, body["rules"].([]any), 0)
+
+	status, body = testutil.DoList(t, ts, "/iam/v1alpha1/rules")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(0), body["total_count"])
+	require.Len(t, body["rules"].([]any), 0)
+}
+
 func TestIAMAndAccountSSHKeyCompatibility(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -391,7 +458,7 @@ func TestServiceStateAllServices(t *testing.T) {
 	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "v"})
 	_, pn := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{"name": "pn", "vpc_id": vpc["id"]})
 	_, srv := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{"name": "s"})
-	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+srv["id"].(string)+"/private_nics", map[string]any{"private_network_id": pn["id"]})
+	testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(srv)+"/private_nics", map[string]any{"private_network_id": pn["id"]})
 	testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
 	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "k"})
 	testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+cluster["id"].(string)+"/pools", map[string]any{"name": "p"})
@@ -594,13 +661,13 @@ func TestResourceLifecyclesTableDriven(t *testing.T) {
 
 			status, body := testutil.DoCreate(t, ts, pathWithCtx(tt.createPath, ctx), bodyWithCtx(tt.body, ctx))
 			require.Equal(t, 200, status)
-			id := body[tt.idField].(string)
+			id := resourceField(body, tt.idField).(string)
 			require.NotEmpty(t, id)
 			ctx["id"] = id
 
 			status, body = testutil.DoGet(t, ts, pathWithCtx(tt.getPath, ctx))
 			require.Equal(t, 200, status)
-			require.Equal(t, id, body[tt.idField])
+			require.Equal(t, id, resourceField(body, tt.idField))
 
 			status, body = testutil.DoList(t, ts, pathWithCtx(tt.listPath, ctx))
 			require.Equal(t, 200, status)
@@ -635,7 +702,7 @@ func TestResourceLifecyclesWithoutGet(t *testing.T) {
 			createPath:   "/lb/v1/zones/{zone}/lbs/{lb_id}/private-networks",
 			listPath:     "/lb/v1/zones/{zone}/lbs/{lb_id}/private-networks",
 			deletePath:   "/lb/v1/zones/{zone}/lbs/{lb_id}/private-networks/{delete_id}",
-			listKey:      "private_networks",
+			listKey:      "private_network",
 			body:         map[string]any{"private_network_id": "{pn_id}"},
 			deleteIDFrom: "private_network_id",
 		},
@@ -721,7 +788,57 @@ func setupVPC(t *testing.T, ts *httptest.Server, ctx map[string]string) {
 func setupServer(t *testing.T, ts *httptest.Server, ctx map[string]string) {
 	t.Helper()
 	_, srv := testutil.DoCreate(t, ts, "/instance/v1/zones/"+ctx["zone"]+"/servers", map[string]any{"name": "srv"})
-	ctx["server_id"] = srv["id"].(string)
+	ctx["server_id"] = resourceID(srv)
+}
+
+func unwrapInstanceResource(body map[string]any) map[string]any {
+	if resource, ok := body["server"].(map[string]any); ok {
+		return resource
+	}
+	if resource, ok := body["ip"].(map[string]any); ok {
+		return resource
+	}
+	if resource, ok := body["security_group"].(map[string]any); ok {
+		return resource
+	}
+	if resource, ok := body["private_nic"].(map[string]any); ok {
+		return resource
+	}
+	return body
+}
+
+func resourceField(body map[string]any, field string) any {
+	if v, ok := body[field]; ok {
+		return v
+	}
+	return unwrapInstanceResource(body)[field]
+}
+
+func resourceID(body map[string]any) string {
+	return resourceField(body, "id").(string)
+}
+
+func doPatch(t *testing.T, ts *httptest.Server, path string, body any) (int, map[string]any) {
+	t.Helper()
+
+	payload, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPatch, ts.URL+path, bytes.NewReader(payload))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Auth-Token", "test-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	out := map[string]any{}
+	if resp.StatusCode != http.StatusNoContent {
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		require.NoError(t, err)
+	}
+	return resp.StatusCode, out
 }
 
 func setupLB(t *testing.T, ts *httptest.Server, ctx map[string]string) {
