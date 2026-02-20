@@ -1148,14 +1148,6 @@ writeJSON(w, http.StatusOK, out)
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
 
-## Pending Fixes
-
-These are spec/code mismatches where AGENTS.md defines the target contract and code must be updated to match. Once fixed, the **Response Shape Conformance Tests** (see Testing section) prevent regressions.
-
-1. **Instance API response wrapping**: Instance Create/Get handlers currently return flat objects. They must wrap responses in a key to match the real Scaleway API (e.g., `{"server": {...}}`). The provider dereferences the wrapper key and panics when it's `nil`. Affected handlers: `CreateServer`, `GetServer`, `CreateIP`, `GetIP`, `CreateSecurityGroup`, `GetSecurityGroup`, `CreatePrivateNIC`, `GetPrivateNIC` in `handlers/instance.go`. See the Response Wrapping table for the exact keys. Covered by `TestCreateGetResponseWrapping`.
-
-2. **LB private-network list key**: `ListLBPrivateNetworks` in `handlers/lb.go` currently returns `"private_networks"` (plural). The real Scaleway API uses the **singular** key `"private_network"` for this list response. Must be changed to match. Covered by `TestListResponseKeys`.
-
 ## Known Limitations
 
 - **No state persistence across runs**: `tofu plan` / `terraform plan` against Mockway always shows all resources as "to be created" because Mockway starts with empty state (`:memory:` default). This is expected — each run is a clean environment. Use `--db ./mockway.db` for file-backed persistence if needed between runs.
