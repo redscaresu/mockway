@@ -167,7 +167,7 @@ mockway/
 **Key pattern** (from simpleAPI): dependency injection via `Application` struct:
 
 ```go
-// cmd/mockway/main.go
+// cmd/mockway/main.go — TARGET STATE (catch-all wiring is pending, see Pending Fixes)
 func run() error {
     port := flag.Int("port", 8080, "HTTP port")
     dbPath := flag.String("db", ":memory:", "SQLite database path")
@@ -191,7 +191,7 @@ func run() error {
     return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
 
-// handlers/handlers.go
+// handlers/handlers.go — TARGET STATE (ListProductsServers is pending, see Pending Fixes)
 type Application struct {
     repo *repository.Repository
 }
