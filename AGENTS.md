@@ -24,7 +24,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 ## Services in Scope (v1)
 
-6 services + 1 legacy alias, 19 resource types. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint. ~84 handler methods + 3 admin endpoints. No S3 in v1.
+6 services + 1 legacy alias, 19 resource types + 1 catalog endpoint. Most have 4 operations (Create, Get, Delete, List); security groups also have Patch (update), PUT rules (bulk set), and GET rules (list); IAM has an additional rules list endpoint; Instance has a products/servers catalog endpoint. ~85 handler methods + 3 admin endpoints + 1 catch-all (UnimplementedHandler). No S3 in v1.
 
 | Service | Path Prefix | Resource Types |
 |---------|-------------|----------------|
@@ -38,7 +38,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`.
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -48,6 +48,7 @@ Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB
 
 | Method | Route | Operation |
 |--------|-------|-----------|
+| GET | `/instance/v1/zones/{zone}/products/servers` | List available server types (static catalog) |
 | POST/GET | `/instance/v1/zones/{zone}/servers` | Create/List servers |
 | GET/DELETE | `/instance/v1/zones/{zone}/servers/{server_id}` | Get/Delete server |
 | POST/GET | `/instance/v1/zones/{zone}/ips` | Create/List IPs |
@@ -181,6 +182,12 @@ func run() error {
     r.Use(middleware.Logger)
     app.RegisterRoutes(r)
 
+    // Catch-all for unimplemented routes — returns 501 and logs the
+    // method + path so a single `tofu apply` / `terraform apply` reveals every missing
+    // endpoint at once instead of failing on the first one.
+    r.NotFound(handlers.UnimplementedHandler)
+    r.MethodNotAllowed(handlers.UnimplementedHandler)
+
     return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
 }
 
@@ -203,6 +210,8 @@ func (app *Application) RegisterRoutes(r chi.Router) {
     r.Group(func(r chi.Router) {
         r.Use(app.requireAuthToken)
         r.Route("/instance/v1/zones/{zone}", func(r chi.Router) {
+            r.Get("/products/servers", app.ListProductsServers)
+
             r.Post("/servers", app.CreateServer)
             r.Get("/servers", app.ListServers)
             r.Get("/servers/{server_id}", app.GetServer)
@@ -693,6 +702,25 @@ Then build incrementally:
 6. Kubernetes (clusters, pools)
 7. IAM (applications, API keys, policies, SSH keys) + Account legacy SSH key alias — no dependencies on other services, can be built in any order after step 1
 
+## Catch-All for Unimplemented Routes
+
+Register `NotFound` and `MethodNotAllowed` handlers on the chi router that return **501 Not Implemented** and log the method + path. This turns every `tofu apply` / `terraform apply` run into a discovery tool — instead of failing on the first missing endpoint and stopping, the provider hits all endpoints it needs and Mockway logs every unimplemented one in a single run.
+
+```go
+// handlers/handlers.go
+func UnimplementedHandler(w http.ResponseWriter, r *http.Request) {
+    log.Printf("UNIMPLEMENTED: %s %s", r.Method, r.URL.String())
+    writeJSON(w, http.StatusNotImplemented, map[string]any{
+        "message": fmt.Sprintf("not implemented: %s %s", r.Method, r.URL.Path),
+        "type":    "not_implemented",
+    })
+}
+```
+
+**How to use**: run `tofu apply` / `terraform apply` against Mockway, then grep the logs for `UNIMPLEMENTED`. Each line is a missing endpoint that needs a handler. Implement them all in one pass instead of the discover-one-fix-one-repeat cycle.
+
+**When to remove**: once all provider-used endpoints are implemented and `tofu apply` / `terraform apply` succeeds cleanly for all resource types, the catch-all becomes a safety net — keep it in place but it should never fire during normal operation.
+
 ## Testing
 
 Use stdlib `testing` + `net/http/httptest` + `github.com/stretchr/testify` for assertions. No other external test dependencies.
@@ -1167,6 +1195,18 @@ writeJSON(w, http.StatusOK, out)
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
+
+## Pending Fixes
+
+1. **Instance products/servers catalog**: The provider sends `GET /instance/v1/zones/{zone}/products/servers?page=1` to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Mockway currently returns 404. Needs: a `ListProductsServers` handler that returns a static catalog of common server types. The response shape is `{"servers": {"DEV1-S": {...}, "DEV1-M": {...}, ...}}` — a map keyed by commercial type, not an array. Include at least: `DEV1-S`, `DEV1-M`, `GP1-S`, `GP1-M`, `GP1-XS`. Each entry needs `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch` (e.g., `"x86_64"`), and `volumes_constraint` fields. Exact values don't matter for mock — use plausible numbers. Tests required:
+   - GET returns 200 with `{"servers": {...}}` containing known types like `DEV1-S`
+   - Each server type entry has required fields (`ncpus`, `ram`, `arch`)
+   - `?page=1` query param is accepted and ignored (same response)
+
+2. **Catch-all unimplemented route handler**: Register `UnimplementedHandler` as `r.NotFound` and `r.MethodNotAllowed` on the chi router. Returns 501 with `{"message": "not implemented: METHOD /path", "type": "not_implemented"}` and logs `UNIMPLEMENTED: METHOD /full-url` to stdout. Tests required:
+   - GET to a completely unknown path returns 501 with `type: "not_implemented"`
+   - POST to a path that only supports GET returns 501 (method not allowed → caught by catch-all)
+   - Response body includes the method and path in the message
 
 ## Known Limitations
 
