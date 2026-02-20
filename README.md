@@ -1,8 +1,8 @@
 # mockway
 
-Stateful local mock of the Scaleway API for offline OpenTofu and Terraform testing.
+Local mock of the Scaleway API for offline OpenTofu and Terraform testing.
 
-Mockway runs as a single Go binary, persists resource state in SQLite, and exposes Scaleway-like API routes on one port.
+Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes Scaleway-like API routes on one port. State is kept in-memory by default — each run starts clean, which is ideal for test cycles. Use `--db ./mockway.db` if you need state to survive restarts.
 
 > **This project is in early development.** Only a subset of Scaleway services have been tested against the real Terraform provider. Other services have handler code but will likely need further work to pass a full `terraform apply` + `terraform destroy` cycle. See [Tested Services](#tested-services) and [Untested Services](#untested-services) below.
 
@@ -86,7 +86,6 @@ The following services have CRUD handler code and pass integration tests at the 
 - **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses) which is a different problem from the JSON REST API.
 - **IAM rules are a stub.** `GET /iam/v1alpha1/rules` always returns an empty list regardless of policy.
 - **User data is discarded.** `PATCH /servers/{id}/user_data/{key}` accepts the body but does not store it. `GET /servers/{id}/user_data` always returns an empty list.
-- **No state persistence by default.** Using `:memory:` (the default), state is lost on exit. Use `--db ./mockway.db` for persistence.
 - **Unimplemented routes return 501.** Any route not explicitly handled returns `501 Not Implemented` with a log line — useful for discovering which endpoints your Terraform config needs.
 
 ## Admin API
