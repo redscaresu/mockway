@@ -38,7 +38,7 @@ A stateful mock of the Scaleway cloud API. Think LocalStack, but for Scaleway. S
 
 **Naming convention**: Scaleway uses **hyphens in URL paths** (`/private-networks/`, `/api-keys/`, `/ssh-keys/`) but **underscores in JSON keys** (`"private_network_id"`). This is Scaleway's actual API style — follow it exactly. The resource type names in the table above match URL path segments. In code and JSON, always use underscores.
 
-Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, and `volumes_constraint` with both `min_size` and `max_size` (the provider reads `max_size` to validate total local volume size — omitting it causes a "must be between X and 0 B" validation failure).
+Each resource type needs: Create, Get (by ID), Delete, and List. Exceptions: RDB databases and users have Create, List, Delete only (no individual Get). Security groups also need Patch (update), PUT `/security_groups/{sg_id}/rules` (bulk-set rules), and GET `/security_groups/{sg_id}/rules` (list rules with `?page=` pagination) — the provider uses all three after creation. IAM has an additional `/rules` list endpoint filtered by `policy_id`. Instance has a `/products/servers` catalog endpoint — the provider queries this to validate the `commercial_type` (e.g., `DEV1-S`) before creating a server. Response shape is `{"servers": {"DEV1-S": {...}, ...}}` — a map keyed by commercial type. Each entry must include `monthly_price`, `hourly_price`, `ncpus`, `ram`, `arch`, `volumes_constraint` (with `min_size` and `max_size`), and `per_volume_constraint` (with `l_ssd` sub-object containing `min_size` and `max_size`). The provider reads `volumes_constraint.max_size` to validate total local volume size — omitting it causes a "must be between X and 0 B" failure. The provider reads `per_volume_constraint.l_ssd` to determine that the server type supports local SSD volumes — without it, the root volume gets typed as block SSD instead of local, the local volume total becomes 0, and validation fails against the `min_size`.
 
 **IAM note**: The IAM API is organisation-scoped — no `{zone}` or `{region}` path parameter. All IAM resources use `/iam/v1alpha1/` as their prefix.
 
@@ -1196,6 +1196,18 @@ writeJSON(w, http.StatusOK, out)
 **Pagination**: v1 ignores `page`/`per_page` query parameters — always return all results in a single page. The OpenTofu/Terraform provider handles this correctly for small datasets (InfraFactory scenarios have ~10-20 resources).
 
 Use UUIDs for all resource IDs (generate with `github.com/google/uuid`), except RDB databases/users (identified by name) and IAM API keys (identified by server-generated `access_key`).
+
+## Pending Fixes
+
+1. **Products/servers `per_volume_constraint`**: Each server type entry in `ListProductsServers` needs a `per_volume_constraint` field with an `l_ssd` sub-object containing `min_size` and `max_size`. Without this, the provider can't determine that the server type supports local SSD volumes — the root volume gets typed as block SSD, the local volume total becomes 0, and validation fails against `volumes_constraint.min_size`. Example for DEV1-S:
+   ```json
+   "per_volume_constraint": {
+     "l_ssd": {"min_size": 1000000000, "max_size": 20000000000}
+   }
+   ```
+   Tests required:
+   - Each server type entry contains `per_volume_constraint` with `l_ssd` sub-object
+   - `l_ssd` has both `min_size` and `max_size`
 
 ## Known Limitations
 
