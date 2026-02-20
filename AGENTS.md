@@ -363,7 +363,7 @@ Mockway must enforce the same referential integrity as the real Scaleway API:
 - **On create**: validate that referenced resources exist. Creating a `private_nic` with a non-existent `server_id` → **404 Not Found**. Creating an RDB instance with an `init_endpoints[].private_network.id` that doesn't exist → **404 Not Found**.
 - **On duplicate create**: UUID-based resources generate a new UUID on each create, so collisions are impossible. For composite-key resources (RDB databases/users), creating with the same `(instance_id, name)` that already exists → **409 Conflict** with `{"message": "resource already exists", "type": "conflict"}`.
 - **On delete**: reject if dependents still exist. Delete a VPC when private networks are still attached → **409 Conflict**. Delete a private network when NICs are attached → **409 Conflict**.
-- **`POST /mock/reset`**: wipes all state. Disable FK checks for reset (`PRAGMA foreign_keys = OFF`, delete all tables, `PRAGMA foreign_keys = ON`). This avoids needing FK-ordered truncation.
+- **`POST /mock/reset`**: wipes all state. Disable FK checks for reset (`PRAGMA foreign_keys = OFF`, delete all rows, `PRAGMA foreign_keys = ON`). This avoids needing FK-ordered truncation.
 
 SQLite enforces FKs natively (`PRAGMA foreign_keys = ON`). Use this for most integrity checks. For cases where the FK is inside the JSON `data` blob, validate programmatically in the handler before inserting:
 
