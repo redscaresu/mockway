@@ -1,47 +1,35 @@
 # mockway
+
 Stateful local mock of the Scaleway API for offline OpenTofu and Terraform testing.
 
 Mockway runs as a single Go binary, persists resource state in SQLite, and exposes Scaleway-like API routes on one port.
 
-## Features
-- Single-port HTTP API with path-based service routing
-- Stateful resource lifecycle (create/get/list/delete)
-- SQLite-backed state (`:memory:` by default, file DB optional)
-- Foreign-key integrity checks (404 on bad references, 409 on dependent deletes)
-- Admin inspection/reset API under `/mock/*`
-- Marketplace image label resolution (e.g., `ubuntu_noble` → UUID)
-- Catch-all 501 handler logs unimplemented routes for easy discovery
-- Echo mode for provider path discovery
+> **Status: Work in progress.** Mockway implements CRUD for the most common Scaleway resources but does not cover the full API surface. See [What's Supported](#whats-supported) and [Known Limitations](#known-limitations) below.
 
 ## Install
+
 ```bash
 go install github.com/redscaresu/mockway/cmd/mockway@latest
 ```
 
 ## Run
-Stateful mock mode:
+
 ```bash
-mockway --port 8080 --db :memory:
+mockway --port 8080
 ```
 
-File-backed DB:
+File-backed DB (state persists across restarts):
+
 ```bash
 mockway --port 8080 --db ./mockway.db
 ```
 
-## Echo Smoke Mode
-Use this mode to discover exactly which routes the Scaleway provider calls.
+Default is `:memory:` — state resets on exit.
 
-```bash
-mockway --port 8080 --echo
-```
+## Usage with OpenTofu / Terraform
 
-Echo mode logs request method/path/headers and replies with:
-```json
-{"ok": true}
-```
+Point the Scaleway provider at Mockway:
 
-Recommended provider env vars for local testing:
 ```bash
 export SCW_API_URL=http://localhost:8080
 export SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX
@@ -49,83 +37,76 @@ export SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000
 export SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000
 ```
 
-Then run either:
-```bash
-tofu plan
-```
-or:
-```bash
-terraform plan
-```
+Then run `tofu plan && tofu apply` or `terraform plan && terraform apply` as normal.
 
-Typical workflow for either CLI:
-```bash
-# OpenTofu
-tofu init
-tofu plan
+## What's Supported
 
-# Terraform
-terraform init
-terraform plan
-```
+### Implemented Services
 
-## Auth
-- Scaleway routes require `X-Auth-Token` with any non-empty value.
-- Admin routes (`/mock/*`) do not require auth.
+| Service | Path Prefix | Resources | Operations |
+|---------|-------------|-----------|------------|
+| Instance | `/instance/v1/zones/{zone}/` | servers, IPs, security groups, private NICs, volumes | CRUD + server actions, user_data stubs, products catalog |
+| VPC | `/vpc/v1/regions/{region}/` | VPCs, private networks | CRUD |
+| Load Balancer | `/lb/v1/zones/{zone}/` | LBs, frontends, backends, private network attachments | CRUD |
+| Kubernetes | `/k8s/v1/regions/{region}/` | clusters, pools | CRUD |
+| RDB | `/rdb/v1/regions/{region}/` | instances, databases, users | CRUD (databases/users: no individual Get) |
+| IAM | `/iam/v1alpha1/` | applications, API keys, policies, SSH keys | CRUD + rules list stub |
+| Marketplace | `/marketplace/v2/` | local images | List + Get (image label → UUID resolution) |
+| Account | `/account/v2alpha1/` | SSH keys | Legacy alias → IAM SSH keys |
 
-Missing auth response:
-```json
-{"message":"missing or empty X-Auth-Token","type":"denied_authentication"}
-```
+### Features
 
-## Services and Routes
-Implemented services:
-- Instance (`/instance/v1/zones/{zone}`) — servers, IPs, security groups, private NICs, products catalog
-- VPC (`/vpc/v1/regions/{region}`) — VPCs, private networks
-- Load Balancer (`/lb/v1/zones/{zone}`) — LBs, frontends, backends, private network attachments
-- Kubernetes (`/k8s/v1/regions/{region}`) — clusters, pools
-- RDB (`/rdb/v1/regions/{region}`) — instances, databases, users
-- IAM (`/iam/v1alpha1/`) — applications, API keys, policies, SSH keys
-- Marketplace (`/marketplace/v2/`) — local image label resolution (e.g., `ubuntu_noble` → image UUID)
-- Account (`/account/v2alpha1/`) — SSH keys (legacy alias → IAM)
+- Single-port HTTP API with path-based service routing
+- Stateful resource lifecycle (create, get, list, delete)
+- SQLite-backed state (`:memory:` by default, file DB optional)
+- Foreign-key integrity (404 on bad references, 409 on dependent deletes)
+- Cascade semantics matching real Scaleway (IP detaches on server delete, NICs cascade-delete)
+- Admin API under `/mock/*` for state inspection and reset
+- Marketplace image label resolution (e.g., `ubuntu_noble` → zone-specific UUID)
+- Instance products/servers catalog (provider uses this for client-side validation)
+- Server action endpoint (poweroff/terminate — returns completed task)
+- Catch-all 501 handler logs unimplemented routes for easy discovery
+- Auth: `X-Auth-Token` required on Scaleway routes (any non-empty value accepted)
 
-Each resource supports Create/Get/List/Delete, except:
-- RDB databases/users: Create/List/Delete (no Get)
-- LB private-network attachment: Attach/List/Detach
-- Security groups: also Patch (update), PUT/GET rules
-- IAM rules: list only (stub, returns empty)
-- Marketplace: list and get local images (static catalog)
-- Instance products/servers: list only (static catalog)
+### Verified End-to-End
 
-## Response Conventions
-Success:
-- Create/Get/List: `200`
-- Delete: `204`
-- `POST /mock/reset`: `204`
+The following resource combination has been tested through a full `terraform apply` + `terraform destroy` cycle:
 
-List payload shape:
-```json
-{"<plural_key>":[...],"total_count":N}
-```
+- `random_id`
+- `scaleway_account_ssh_key`
+- `scaleway_iam_application`
+- `scaleway_iam_api_key`
+- `scaleway_iam_policy`
+- `scaleway_instance_ip`
+- `scaleway_instance_security_group` (with inbound rules)
+- `scaleway_instance_server` (with image label, security group, reserved IP, cloud-init user_data)
 
-Error types:
-- `404 not_found` with `resource not found` (missing target on get/delete)
-- `404 not_found` with `referenced resource not found` (bad FK on create)
-- `409 conflict` with `cannot delete: dependents exist`
-- `409 conflict` with `resource already exists`
+## Known Limitations
+
+- **Not a full Scaleway API mock.** Only CRUD operations are implemented. Update/patch operations are limited (security groups only). Many API features (snapshots, placement groups, DNS, object storage/S3, block storage, serverless, etc.) are not implemented.
+- **No field validation.** Mockway accepts whatever JSON you send and stores it. It does not validate `commercial_type`, `node_type`, required fields, or value constraints beyond foreign key references.
+- **No pagination.** All list endpoints return all results in a single page. `page`/`per_page` query parameters are ignored.
+- **No S3 / Object Storage.** S3-compatible endpoints are not implemented.
+- **IAM rules are a stub.** `GET /iam/v1alpha1/rules` always returns an empty list regardless of policy.
+- **User data is discarded.** `PATCH /servers/{id}/user_data/{key}` accepts the body but does not store it. `GET /servers/{id}/user_data` always returns an empty list.
+- **No state persistence by default.** Using `:memory:` (the default), state is lost on exit. Use `--db ./mockway.db` for persistence.
+- **Unimplemented routes return 501.** Any route not explicitly handled returns `501 Not Implemented` with a log line — useful for discovering which endpoints your Terraform config needs.
 
 ## Admin API
-```text
-POST /mock/reset
-GET  /mock/state
-GET  /mock/state/{service}
+
+```
+POST /mock/reset          — wipe all state
+GET  /mock/state          — full resource graph as JSON
+GET  /mock/state/{service} — single service (instance, vpc, lb, k8s, rdb, iam)
 ```
 
-`{service}` supports: `instance`, `vpc`, `lb`, `k8s`, `rdb`, `iam`.
-
 ## Quick Example
+
 ```bash
-# Create VPC
+# Start mockway
+mockway --port 8080 &
+
+# Create a VPC
 curl -s -X POST \
   -H 'X-Auth-Token: test' \
   -H 'Content-Type: application/json' \
@@ -134,16 +115,21 @@ curl -s -X POST \
 
 # Inspect full state
 curl -s http://localhost:8080/mock/state | jq .
+
+# Reset all state
+curl -s -X POST http://localhost:8080/mock/reset
 ```
 
 ## Development
+
 ```bash
 go test ./...
 ```
 
 Key packages:
-- `cmd/mockway` - binary entrypoint
-- `handlers` - HTTP routes and error mapping
-- `repository` - SQLite schema + CRUD/state logic
-- `models` - domain errors
-- `testutil` - shared integration test helpers
+
+- `cmd/mockway` — binary entrypoint
+- `handlers` — HTTP routes and error mapping
+- `repository` — SQLite schema + CRUD/state logic
+- `models` — domain errors
+- `testutil` — shared integration test helpers
