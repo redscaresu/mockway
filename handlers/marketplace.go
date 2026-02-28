@@ -28,7 +28,7 @@ var marketplaceTypes = []string{
 }
 
 var compatibleCommercialTypes = []any{
-	"DEV1-S", "DEV1-M", "DEV1-L", "GP1-XS", "GP1-S", "GP1-M",
+	"DEV1-S", "DEV1-M", "DEV1-L", "GP1-XS", "GP1-S", "GP1-M", "GP1-L", "GP1-XL",
 }
 
 func (app *Application) ListMarketplaceLocalImages(w http.ResponseWriter, r *http.Request) {

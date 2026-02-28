@@ -432,12 +432,20 @@ func TestRDBEndpointHelpersAndRandom(t *testing.T) {
 	require.Equal(t, float64(3306), mysqlEP["port"])
 	require.Equal(t, "pn-1", mysqlEP["private_network"].(map[string]any)["id"])
 
-	_, err = repository.BuildRDBEndpointsFromInit([]any{map[string]any{}}, "PostgreSQL-15")
-	require.Error(t, err)
+	// Empty map without private_network falls back to public endpoint.
+	fallbackEPs, err := repository.BuildRDBEndpointsFromInit([]any{map[string]any{}}, "PostgreSQL-15")
+	require.NoError(t, err)
+	require.Len(t, fallbackEPs, 1)
+	require.Equal(t, float64(5432), fallbackEPs[0].(map[string]any)["port"])
+
+	// Empty private_network (no id) is rejected as invalid input.
 	_, err = repository.BuildRDBEndpointsFromInit([]any{map[string]any{
 		"private_network": map[string]any{},
 	}}, "PostgreSQL-15")
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing id")
+
+	// Non-map entry still returns an error.
 	_, err = repository.BuildRDBEndpointsFromInit([]any{"bad"}, "PostgreSQL-15")
 	require.Error(t, err)
 

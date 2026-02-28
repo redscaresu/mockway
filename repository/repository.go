@@ -81,6 +81,11 @@ func (r *Repository) init() error {
 			zone TEXT NOT NULL,
 			data JSON NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS lb_ips (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS lbs (
 			id TEXT PRIMARY KEY,
 			zone TEXT NOT NULL,
@@ -130,6 +135,28 @@ func (r *Repository) init() error {
 			name TEXT NOT NULL,
 			data JSON NOT NULL,
 			PRIMARY KEY (instance_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS rdb_privileges (
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id),
+			user_name TEXT NOT NULL,
+			database_name TEXT NOT NULL,
+			data JSON NOT NULL,
+			PRIMARY KEY (instance_id, user_name, database_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS domain_records (
+			id TEXT PRIMARY KEY,
+			dns_zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS redis_clusters (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS registry_namespaces (
+			id TEXT PRIMARY KEY,
+			region TEXT NOT NULL,
+			data JSON NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS iam_applications (
 			id TEXT PRIMARY KEY,
@@ -187,19 +214,24 @@ func (r *Repository) Reset() error {
 		"lb_frontends",
 		"lb_backends",
 		"lbs",
+		"lb_ips",
 		"instance_private_nics",
 		"instance_ips",
 		"instance_servers",
 		"instance_security_groups",
 		"k8s_pools",
 		"k8s_clusters",
+		"rdb_privileges",
 		"rdb_databases",
 		"rdb_users",
 		"rdb_instances",
+		"redis_clusters",
+		"registry_namespaces",
 		"iam_api_keys",
 		"iam_policies",
 		"iam_ssh_keys",
 		"iam_applications",
+		"domain_records",
 		"private_networks",
 		"vpcs",
 	}
@@ -418,6 +450,23 @@ func (r *Repository) CreatePrivateNetwork(region string, data map[string]any) (m
 	data["created_at"] = now
 	data["updated_at"] = now
 	data["region"] = region
+	// Build subnets as proper objects (the SDK expects vpc.Subnet structs).
+	subnet := "172.16.0.0/22"
+	if v4, ok := data["ipv4_subnet"].(map[string]any); ok {
+		if s, ok := v4["subnet"].(string); ok {
+			subnet = s
+		}
+	} else if existing, ok := data["subnets"].([]any); ok && len(existing) > 0 {
+		if s, ok := existing[0].(string); ok {
+			subnet = s
+		}
+	}
+	data["subnets"] = []any{map[string]any{
+		"id":         newID(),
+		"subnet":     subnet,
+		"created_at": now,
+		"updated_at": now,
+	}}
 	vpcID, _ := data["vpc_id"].(string)
 	return r.createSimple("private_networks", "region", region, data, colVal{name: "vpc_id", val: vpcID})
 }
@@ -518,8 +567,27 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	data["state"] = "running"
 	data["creation_date"] = now
 	data["modification_date"] = now
-	data["public_ips"] = []any{}
-	data["public_ip"] = nil
+	var resolvedIPs []any
+	if rawIPs, ok := data["public_ips"].([]any); ok {
+		for _, raw := range rawIPs {
+			if ipID, ok := raw.(string); ok && ipID != "" {
+				if ipRec, err := r.GetIP(ipID); err == nil {
+					resolvedIPs = append(resolvedIPs, map[string]any{
+						"id":      ipID,
+						"address": ipRec["address"],
+						"dynamic": false,
+					})
+				}
+			}
+		}
+	}
+	if len(resolvedIPs) > 0 {
+		data["public_ips"] = resolvedIPs
+		data["public_ip"] = resolvedIPs[0]
+	} else {
+		data["public_ips"] = []any{}
+		data["public_ip"] = nil
+	}
 	serverName, _ := data["name"].(string)
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
@@ -537,6 +605,14 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 		},
 	}
 	sgID, _ := data["security_group_id"].(string)
+	if _, ok := data["security_group"].(map[string]any); !ok {
+		// Provider dereferences SecurityGroup.ID without nil check (server.go:693).
+		sgObjID := sgID
+		if sgObjID == "" {
+			sgObjID = newID()
+		}
+		data["security_group"] = map[string]any{"id": sgObjID, "name": "default"}
+	}
 	var extras []colVal
 	if sgID != "" {
 		extras = append(extras, colVal{name: "security_group_id", val: sgID})
@@ -714,6 +790,11 @@ func (r *Repository) CreatePrivateNIC(zone, serverID string, data map[string]any
 	data = cloneMap(data)
 	data["server_id"] = serverID
 	data["zone"] = zone
+	data["state"] = "available"
+	data["private_ips"] = []any{map[string]any{
+		"id":      newID(),
+		"address": fakePrivateIP(),
+	}}
 	pnID, _ := data["private_network_id"].(string)
 	return r.createSimple(
 		"instance_private_nics",
@@ -743,9 +824,14 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 	id := newID()
 	data["id"] = id
 	data["ip"] = []any{map[string]any{
-		"id":         newID(),
-		"ip_address": fakePublicIP(),
-		"lb_id":      id,
+		"id":              newID(),
+		"ip_address":      fakePublicIP(),
+		"lb_id":           id,
+		"reverse":         "",
+		"organization_id": "00000000-0000-0000-0000-000000000000",
+		"project_id":      "00000000-0000-0000-0000-000000000000",
+		"zone":            zone,
+		"region":          regionFromZone(zone),
 	}}
 	if err := r.insertJSON("lbs", []colVal{{name: "id", val: id}, {name: "zone", val: zone}}, data); err != nil {
 		return nil, err
@@ -756,10 +842,89 @@ func (r *Repository) GetLB(id string) (map[string]any, error) { return r.getJSON
 func (r *Repository) ListLBs(zone string) ([]map[string]any, error) {
 	return r.listJSON("lbs", "zone", zone)
 }
-func (r *Repository) DeleteLB(id string) error { return r.deleteBy("lbs", "id = ?", id) }
+func (r *Repository) UpdateLB(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lbs", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	if err := r.updateJSONByID("lbs", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteLB(id string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Cascade private-network attachments (the Scaleway provider does not
+	// detach them before deleting the LB). Frontends and backends are NOT
+	// cascaded — the provider deletes those explicitly, and 409 correctly
+	// signals if any remain.
+	if _, err := tx.Exec("DELETE FROM lb_private_networks WHERE lb_id = ?", id); err != nil {
+		return mapDeleteSQLError(err)
+	}
+
+	res, err := tx.Exec("DELETE FROM lbs WHERE id = ?", id)
+	if err != nil {
+		return mapDeleteSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func (r *Repository) CreateLBIP(zone string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	data["zone"] = zone
+	data["ip_address"] = fakePublicIP()
+	data["status"] = "ready"
+	data["lb_id"] = nil
+	data["reverse"] = ""
+	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	data["region"] = regionFromZone(zone)
+	return r.createSimple("lb_ips", "zone", zone, data)
+}
+func (r *Repository) GetLBIP(id string) (map[string]any, error) {
+	return r.getJSONByID("lb_ips", "id", id)
+}
+func (r *Repository) ListLBIPs(zone string) ([]map[string]any, error) {
+	return r.listJSON("lb_ips", "zone", zone)
+}
+func (r *Repository) DeleteLBIP(id string) error { return r.deleteBy("lb_ips", "id = ?", id) }
 
 func (r *Repository) CreateFrontend(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
 	lbID, _ := data["lb_id"].(string)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	// The provider accesses res.LB.ID and res.Backend.ID after create.
+	if lbID != "" {
+		lb, err := r.GetLB(lbID)
+		if err == nil {
+			data["lb"] = lb
+		}
+	}
+	if backendID, ok := data["backend_id"].(string); ok && backendID != "" {
+		data["backend"] = map[string]any{"id": backendID}
+	}
 	return r.createSimple("lb_frontends", "lb_id", lbID, data)
 }
 func (r *Repository) GetFrontend(id string) (map[string]any, error) {
@@ -768,10 +933,68 @@ func (r *Repository) GetFrontend(id string) (map[string]any, error) {
 func (r *Repository) ListFrontends() ([]map[string]any, error) {
 	return r.listJSON("lb_frontends", "", "")
 }
+func (r *Repository) ListFrontendsByLB(lbID string) ([]map[string]any, error) {
+	return r.listJSON("lb_frontends", "lb_id", lbID)
+}
+func (r *Repository) UpdateFrontend(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_frontends", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	if err := r.updateJSONByID("lb_frontends", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (r *Repository) DeleteFrontend(id string) error { return r.deleteBy("lb_frontends", "id = ?", id) }
 
 func (r *Repository) CreateBackend(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
 	lbID, _ := data["lb_id"].(string)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	// The provider accesses res.LB.ID after create.
+	if lbID != "" {
+		lb, err := r.GetLB(lbID)
+		if err == nil {
+			data["lb"] = lb
+		}
+	}
+	// Provide defaults for fields the provider reads via d.Set.
+	if _, ok := data["timeout_server"]; !ok {
+		data["timeout_server"] = "5m"
+	}
+	if _, ok := data["timeout_connect"]; !ok {
+		data["timeout_connect"] = "5s"
+	}
+	if _, ok := data["timeout_tunnel"]; !ok {
+		data["timeout_tunnel"] = "15m"
+	}
+	if _, ok := data["timeout_queue"]; !ok {
+		data["timeout_queue"] = "0s"
+	}
+	if _, ok := data["on_marked_down_action"]; !ok {
+		data["on_marked_down_action"] = "none"
+	}
+	if _, ok := data["health_check"]; !ok {
+		data["health_check"] = map[string]any{
+			"port":                   data["forward_port"],
+			"check_delay":            "60s",
+			"check_timeout":          "30s",
+			"check_max_retries":      3,
+			"transient_check_delay":  "0.5s",
+			"tcp_config":             map[string]any{},
+		}
+	}
 	return r.createSimple("lb_backends", "lb_id", lbID, data)
 }
 func (r *Repository) GetBackend(id string) (map[string]any, error) {
@@ -780,10 +1003,41 @@ func (r *Repository) GetBackend(id string) (map[string]any, error) {
 func (r *Repository) ListBackends() ([]map[string]any, error) {
 	return r.listJSON("lb_backends", "", "")
 }
+func (r *Repository) ListBackendsByLB(lbID string) ([]map[string]any, error) {
+	return r.listJSON("lb_backends", "lb_id", lbID)
+}
+func (r *Repository) UpdateBackend(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_backends", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	if err := r.updateJSONByID("lb_backends", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (r *Repository) DeleteBackend(id string) error { return r.deleteBy("lb_backends", "id = ?", id) }
 
 func (r *Repository) AttachLBPrivateNetwork(lbID, privateNetworkID string) (map[string]any, error) {
-	data := map[string]any{"lb_id": lbID, "private_network_id": privateNetworkID}
+	now := nowRFC3339()
+	data := map[string]any{
+		"lb_id":              lbID,
+		"private_network_id": privateNetworkID,
+		"status":             "ready",
+		"ip_address":         []any{fakePrivateIP()},
+		"dhcp_config":        map[string]any{},
+		"static_config":      nil,
+		"created_at":         now,
+		"updated_at":         now,
+	}
 	if err := r.insertJSON("lb_private_networks", []colVal{{name: "lb_id", val: lbID}, {name: "private_network_id", val: privateNetworkID}}, data); err != nil {
 		return nil, err
 	}
@@ -803,6 +1057,64 @@ func (r *Repository) CreateCluster(region string, data map[string]any) (map[stri
 	data["status"] = "ready"
 	data["created_at"] = now
 	data["updated_at"] = now
+
+	// Fields the Scaleway TF provider reads and will nil-deref on if missing.
+	if _, ok := data["cluster_url"]; !ok {
+		data["cluster_url"] = "https://mock-k8s-apiserver.scw.cloud:6443"
+	}
+	if _, ok := data["wildcard_dns"]; !ok {
+		data["wildcard_dns"] = "*.mock-k8s.scw.cloud"
+	}
+	if _, ok := data["open_id_connect_config"]; !ok {
+		data["open_id_connect_config"] = map[string]any{
+			"issuer_url":      "",
+			"client_id":       "",
+			"username_claim":  "",
+			"username_prefix": "",
+			"groups_claim":    []any{},
+			"groups_prefix":   "",
+			"required_claim":  []any{},
+		}
+	}
+	if _, ok := data["auto_upgrade"]; !ok {
+		data["auto_upgrade"] = map[string]any{
+			"enable":                false,
+			"maintenance_window":    map[string]any{"day": "any", "start_hour": float64(0)},
+		}
+	}
+	if _, ok := data["autoscaler_config"]; !ok {
+		data["autoscaler_config"] = map[string]any{
+			"scale_down_disabled":              false,
+			"scale_down_delay_after_add":       "10m",
+			"estimator":                        "binpacking",
+			"expander":                         "random",
+			"ignore_daemonsets_utilization":     false,
+			"balance_similar_node_groups":       false,
+			"expendable_pods_priority_cutoff":   float64(-10),
+			"scale_down_unneeded_time":          "10m",
+			"scale_down_utilization_threshold":  0.5,
+			"max_graceful_termination_sec":      float64(600),
+		}
+	}
+	if _, ok := data["feature_gates"]; !ok {
+		data["feature_gates"] = []any{}
+	}
+	if _, ok := data["admission_plugins"]; !ok {
+		data["admission_plugins"] = []any{}
+	}
+	if _, ok := data["apiserver_cert_sans"]; !ok {
+		data["apiserver_cert_sans"] = []any{}
+	}
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+
 	pnID, _ := data["private_network_id"].(string)
 	var extras []colVal
 	if pnID != "" {
@@ -816,7 +1128,39 @@ func (r *Repository) GetCluster(id string) (map[string]any, error) {
 func (r *Repository) ListClusters(region string) ([]map[string]any, error) {
 	return r.listJSON("k8s_clusters", "region", region)
 }
-func (r *Repository) DeleteCluster(id string) error { return r.deleteBy("k8s_clusters", "id = ?", id) }
+func (r *Repository) UpdateCluster(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("k8s_clusters", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("k8s_clusters", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteCluster(id string) error {
+	res, err := r.db.Exec("DELETE FROM k8s_clusters WHERE id = ?", id)
+	if err != nil {
+		return mapDeleteSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return nil
+}
 
 func (r *Repository) CreatePool(region, clusterID string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
@@ -826,6 +1170,34 @@ func (r *Repository) CreatePool(region, clusterID string, data map[string]any) (
 	data["status"] = "ready"
 	data["created_at"] = now
 	data["updated_at"] = now
+
+	// Fields the Scaleway TF provider reads during pool resource reads.
+	if _, ok := data["version"]; !ok {
+		data["version"] = "1.31.2"
+	}
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	if _, ok := data["upgrade_policy"]; !ok {
+		data["upgrade_policy"] = map[string]any{
+			"max_unavailable": float64(1),
+			"max_surge":       float64(0),
+		}
+	}
+	if _, ok := data["nodes"]; !ok {
+		data["nodes"] = []any{}
+	}
+	if _, ok := data["root_volume_type"]; !ok {
+		data["root_volume_type"] = "l_ssd"
+	}
+	if _, ok := data["root_volume_size"]; !ok {
+		data["root_volume_size"] = float64(20000000000)
+	}
+	if _, ok := data["zone"]; !ok {
+		// Default zone from region.
+		data["zone"] = region + "-1"
+	}
+
 	return r.createSimple("k8s_pools", "region", region, data, colVal{name: "cluster_id", val: clusterID})
 }
 func (r *Repository) GetPool(id string) (map[string]any, error) {
@@ -834,6 +1206,25 @@ func (r *Repository) GetPool(id string) (map[string]any, error) {
 func (r *Repository) ListPoolsByCluster(clusterID string) ([]map[string]any, error) {
 	return r.listJSON("k8s_pools", "cluster_id", clusterID)
 }
+func (r *Repository) UpdatePool(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("k8s_pools", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("k8s_pools", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (r *Repository) DeletePool(id string) error { return r.deleteBy("k8s_pools", "id = ?", id) }
 
 func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[string]any, error) {
@@ -846,6 +1237,53 @@ func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[
 	if _, ok := data["endpoints"]; !ok {
 		data["endpoints"] = []any{map[string]any{"ip": fakePublicIP(), "port": port}}
 	}
+	// Fields required by the TF provider's ResourceRdbInstanceRead to avoid nil derefs.
+	if _, ok := data["volume"]; !ok {
+		data["volume"] = map[string]any{"type": "lssd", "size": float64(10000000000)}
+	}
+	if _, ok := data["backup_schedule"]; !ok {
+		data["backup_schedule"] = map[string]any{
+			"disabled":  false,
+			"frequency":  24,
+			"retention": 7,
+		}
+	}
+	if _, ok := data["backup_same_region"]; !ok {
+		data["backup_same_region"] = false
+	}
+	if _, ok := data["encryption"]; !ok {
+		data["encryption"] = map[string]any{"enabled": false}
+	}
+	if _, ok := data["settings"]; !ok {
+		data["settings"] = []any{}
+	}
+	if _, ok := data["init_settings"]; !ok {
+		data["init_settings"] = []any{}
+	}
+	if _, ok := data["logs_policy"]; !ok {
+		data["logs_policy"] = map[string]any{
+			"max_age_retention":    30,
+			"total_disk_retention": nil,
+		}
+	}
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	if _, ok := data["upgradable_version"]; !ok {
+		data["upgradable_version"] = []any{}
+	}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["read_replicas"]; !ok {
+		data["read_replicas"] = []any{}
+	}
+	if _, ok := data["maintenances"]; !ok {
+		data["maintenances"] = []any{}
+	}
 	return r.createSimple("rdb_instances", "region", region, data)
 }
 func (r *Repository) GetRDBInstance(id string) (map[string]any, error) {
@@ -854,8 +1292,38 @@ func (r *Repository) GetRDBInstance(id string) (map[string]any, error) {
 func (r *Repository) ListRDBInstances(region string) ([]map[string]any, error) {
 	return r.listJSON("rdb_instances", "region", region)
 }
+func (r *Repository) UpdateRDBInstance(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_instances", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("rdb_instances", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (r *Repository) DeleteRDBInstance(id string) error {
-	return r.deleteBy("rdb_instances", "id = ?", id)
+	res, err := r.db.Exec("DELETE FROM rdb_instances WHERE id = ?", id)
+	if err != nil {
+		return mapDeleteSQLError(err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return models.ErrNotFound
+	}
+	return nil
 }
 
 func (r *Repository) CreateRDBDatabase(instanceID, name string, data map[string]any) (map[string]any, error) {
@@ -888,6 +1356,73 @@ func (r *Repository) ListRDBUsers(instanceID string) ([]map[string]any, error) {
 }
 func (r *Repository) DeleteRDBUser(instanceID, name string) error {
 	return r.deleteBy("rdb_users", "instance_id = ? AND name = ?", instanceID, name)
+}
+
+func (r *Repository) SetRDBPrivileges(instanceID string, privileges []any) ([]map[string]any, error) {
+	// Replace all privileges for this instance with the provided set.
+	if _, err := r.db.Exec("DELETE FROM rdb_privileges WHERE instance_id = ?", instanceID); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(privileges))
+	for _, raw := range privileges {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		p = cloneMap(p)
+		userName, _ := p["user_name"].(string)
+		dbName, _ := p["database_name"].(string)
+		if err := r.insertJSON("rdb_privileges", []colVal{
+			{name: "instance_id", val: instanceID},
+			{name: "user_name", val: userName},
+			{name: "database_name", val: dbName},
+		}, p); err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	return result, nil
+}
+
+func (r *Repository) ListRDBPrivileges(instanceID string) ([]map[string]any, error) {
+	return r.listJSON("rdb_privileges", "instance_id", instanceID)
+}
+
+func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[string]any, error) {
+	for _, raw := range changes {
+		change, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if add, ok := change["add"].(map[string]any); ok {
+			records, _ := add["records"].([]any)
+			for _, rec := range records {
+				recMap, ok := rec.(map[string]any)
+				if !ok {
+					continue
+				}
+				recMap = cloneMap(recMap)
+				recMap["id"] = newID()
+				if err := r.insertJSON("domain_records", []colVal{{name: "id", val: recMap["id"]}, {name: "dns_zone", val: dnsZone}}, recMap); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if del, ok := change["delete"].(map[string]any); ok {
+			if id, ok := del["id"].(string); ok && id != "" {
+				_ = r.deleteBy("domain_records", "id = ?", id)
+			}
+		}
+	}
+	return r.ListDomainRecords(dnsZone)
+}
+
+func (r *Repository) ListDomainRecords(dnsZone string) ([]map[string]any, error) {
+	return r.listJSON("domain_records", "dns_zone", dnsZone)
+}
+
+func (r *Repository) DeleteDomainRecord(id string) error {
+	return r.deleteBy("domain_records", "id = ?", id)
 }
 
 func (r *Repository) CreateIAMApplication(data map[string]any) (map[string]any, error) {
@@ -1019,6 +1554,144 @@ func (r *Repository) DeleteIAMSSHKey(id string) error {
 	return r.deleteBy("iam_ssh_keys", "id = ?", id)
 }
 
+// --- Redis ---
+
+func (r *Repository) CreateRedisCluster(zone string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	id := newID()
+	now := nowRFC3339()
+	data["id"] = id
+	data["zone"] = zone
+	data["status"] = "ready"
+	data["cluster_size"] = float64(1)
+	data["tls_enabled"] = false
+	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	if _, ok := data["acl_rules"]; !ok {
+		data["acl_rules"] = []any{}
+	}
+	if _, ok := data["endpoints"]; !ok {
+		data["endpoints"] = []any{map[string]any{
+			"id":   newID(),
+			"ips":  []any{fakePrivateIP()},
+			"port": float64(6379),
+		}}
+	}
+	if _, ok := data["public_network"]; !ok {
+		data["public_network"] = []any{}
+	}
+	if _, ok := data["settings"]; !ok {
+		data["settings"] = map[string]any{}
+	}
+	if _, ok := data["user_name"]; !ok {
+		data["user_name"] = "default"
+	}
+
+	cols := []colVal{
+		{name: "id", val: id},
+		{name: "zone", val: zone},
+	}
+	if err := r.insertJSON("redis_clusters", cols, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetRedisCluster(id string) (map[string]any, error) {
+	return r.getJSONByID("redis_clusters", "id", id)
+}
+
+func (r *Repository) ListRedisClusters(zone string) ([]map[string]any, error) {
+	return r.listJSON("redis_clusters", "zone", zone)
+}
+
+func (r *Repository) UpdateRedisCluster(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("redis_clusters", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	merged := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		merged[k] = v
+	}
+	merged["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("redis_clusters", "id", id, merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func (r *Repository) DeleteRedisCluster(id string) error {
+	return r.deleteBy("redis_clusters", "id = ?", id)
+}
+
+// --- Container Registry ---
+
+func (r *Repository) CreateRegistryNamespace(region string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	id := newID()
+	now := nowRFC3339()
+	data["id"] = id
+	data["region"] = region
+	data["status"] = "ready"
+	data["endpoint"] = fmt.Sprintf("rg.%s.scw.cloud/%s", region, data["name"])
+	data["image_count"] = float64(0)
+	data["size"] = float64(0)
+	data["is_public"] = false
+	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	data["created_at"] = now
+	data["updated_at"] = now
+
+	cols := []colVal{
+		{name: "id", val: id},
+		{name: "region", val: region},
+	}
+	if err := r.insertJSON("registry_namespaces", cols, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetRegistryNamespace(id string) (map[string]any, error) {
+	return r.getJSONByID("registry_namespaces", "id", id)
+}
+
+func (r *Repository) ListRegistryNamespaces(region string) ([]map[string]any, error) {
+	return r.listJSON("registry_namespaces", "region", region)
+}
+
+func (r *Repository) UpdateRegistryNamespace(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("registry_namespaces", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	merged := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		merged[k] = v
+	}
+	merged["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("registry_namespaces", "id", id, merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func (r *Repository) DeleteRegistryNamespace(id string) error {
+	return r.deleteBy("registry_namespaces", "id = ?", id)
+}
+
 func (r *Repository) FullState() (map[string]any, error) {
 	servers, err := r.listJSON("instance_servers", "", "")
 	if err != nil {
@@ -1041,6 +1714,10 @@ func (r *Repository) FullState() (map[string]any, error) {
 		return nil, err
 	}
 	pns, err := r.listJSON("private_networks", "", "")
+	if err != nil {
+		return nil, err
+	}
+	lbIPs, err := r.listJSON("lb_ips", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -1080,6 +1757,18 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	rdbPrivileges, err := r.listJSON("rdb_privileges", "", "")
+	if err != nil {
+		return nil, err
+	}
+	redisClusters, err := r.listJSON("redis_clusters", "", "")
+	if err != nil {
+		return nil, err
+	}
+	registryNamespaces, err := r.listJSON("registry_namespaces", "", "")
+	if err != nil {
+		return nil, err
+	}
 	iamApplications, err := r.listJSON("iam_applications", "", "")
 	if err != nil {
 		return nil, err
@@ -1096,6 +1785,10 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	domainRecords, err := r.listJSON("domain_records", "", "")
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"instance": map[string]any{
@@ -1109,6 +1802,7 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"private_networks": pns,
 		},
 		"lb": map[string]any{
+			"ips":              lbIPs,
 			"lbs":              lbs,
 			"frontends":        frontends,
 			"backends":         backends,
@@ -1119,15 +1813,25 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"pools":    pools,
 		},
 		"rdb": map[string]any{
-			"instances": rdbInstances,
-			"databases": rdbDatabases,
-			"users":     rdbUsers,
+			"instances":  rdbInstances,
+			"databases":  rdbDatabases,
+			"users":      rdbUsers,
+			"privileges": rdbPrivileges,
+		},
+		"redis": map[string]any{
+			"clusters": redisClusters,
+		},
+		"registry": map[string]any{
+			"namespaces": registryNamespaces,
 		},
 		"iam": map[string]any{
 			"applications": iamApplications,
 			"api_keys":     iamAPIKeys,
 			"policies":     iamPolicies,
 			"ssh_keys":     iamSSHKeys,
+		},
+		"domain": map[string]any{
+			"records": domainRecords,
 		},
 	}, nil
 }
@@ -1171,6 +1875,10 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			"private_networks": pns,
 		}, nil
 	case "lb":
+		lbIPs, err := r.listJSON("lb_ips", "", "")
+		if err != nil {
+			return nil, err
+		}
 		lbs, err := r.listJSON("lbs", "", "")
 		if err != nil {
 			return nil, err
@@ -1188,6 +1896,7 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			return nil, err
 		}
 		return map[string]any{
+			"ips":              lbIPs,
 			"lbs":              lbs,
 			"frontends":        frontends,
 			"backends":         backends,
@@ -1224,6 +1933,22 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			"databases": databases,
 			"users":     users,
 		}, nil
+	case "redis":
+		clusters, err := r.listJSON("redis_clusters", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"clusters": clusters,
+		}, nil
+	case "registry":
+		namespaces, err := r.listJSON("registry_namespaces", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"namespaces": namespaces,
+		}, nil
 	case "iam":
 		applications, err := r.listJSON("iam_applications", "", "")
 		if err != nil {
@@ -1252,6 +1977,17 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 	}
 }
 
+// regionFromZone extracts the region prefix from a zone string (e.g.
+// "fr-par-1" -> "fr-par"). Returns zone unchanged if it has fewer than 2
+// dash-separated parts, avoiding index-out-of-range panics on malformed input.
+func regionFromZone(zone string) string {
+	parts := strings.SplitN(zone, "-", 3)
+	if len(parts) < 2 {
+		return zone
+	}
+	return parts[0] + "-" + parts[1]
+}
+
 func fakePublicIP() string {
 	p := strings.ReplaceAll(newID(), "-", "")
 	return fmt.Sprintf("51.15.%d.%d", int(p[0])%254+1, int(p[1])%254+1)
@@ -1274,11 +2010,16 @@ func BuildRDBEndpointsFromInit(initEndpoints any, engine any) ([]any, error) {
 	}
 	pn, ok := first["private_network"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("invalid init_endpoints.private_network")
+		// If no private_network block, return a public endpoint.
+		return []any{map[string]any{"ip": fakePublicIP(), "port": port}}, nil
 	}
+	// Accept both "id" and "private_network_id" as the PN identifier.
 	pnID, _ := pn["id"].(string)
 	if pnID == "" {
-		return nil, fmt.Errorf("missing init_endpoints.private_network.id")
+		pnID, _ = pn["private_network_id"].(string)
+	}
+	if pnID == "" {
+		return nil, fmt.Errorf("invalid init_endpoints: private_network present but missing id")
 	}
 	return []any{map[string]any{
 		"ip":              fakePrivateIP(),

@@ -76,6 +76,45 @@ func (app *Application) ListProductsServers(w http.ResponseWriter, _ *http.Reque
 					"l_ssd": map[string]any{"min_size": 0, "max_size": 600000000000},
 				},
 			},
+			"GP1-L": map[string]any{
+				"monthly_price":       239.99,
+				"hourly_price":        0.36,
+				"ncpus":               32,
+				"ram":                 68719476736,
+				"arch":                "x86_64",
+				"volume_type":         "l_ssd",
+				"default_volume_type": "l_ssd",
+				"volumes_constraint":  map[string]any{"min_size": 0, "max_size": 600000000000},
+				"per_volume_constraint": map[string]any{
+					"l_ssd": map[string]any{"min_size": 0, "max_size": 600000000000},
+				},
+			},
+			"GP1-XL": map[string]any{
+				"monthly_price":       479.99,
+				"hourly_price":        0.72,
+				"ncpus":               48,
+				"ram":                 137438953472,
+				"arch":                "x86_64",
+				"volume_type":         "l_ssd",
+				"default_volume_type": "l_ssd",
+				"volumes_constraint":  map[string]any{"min_size": 0, "max_size": 600000000000},
+				"per_volume_constraint": map[string]any{
+					"l_ssd": map[string]any{"min_size": 0, "max_size": 600000000000},
+				},
+			},
+			"DEV1-L": map[string]any{
+				"monthly_price":       47.99,
+				"hourly_price":        0.072,
+				"ncpus":               4,
+				"ram":                 8589934592,
+				"arch":                "x86_64",
+				"volume_type":         "l_ssd",
+				"default_volume_type": "l_ssd",
+				"volumes_constraint":  map[string]any{"min_size": 0, "max_size": 80000000000},
+				"per_volume_constraint": map[string]any{
+					"l_ssd": map[string]any{"min_size": 0, "max_size": 80000000000},
+				},
+			},
 		},
 	})
 }
@@ -200,7 +239,8 @@ func (app *Application) ListServerUserData(w http.ResponseWriter, r *http.Reques
 }
 
 func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
-	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
+	serverID := chi.URLParam(r, "server_id")
+	if _, err := app.repo.GetServer(serverID); err != nil {
 		writeDomainError(w, err)
 		return
 	}
@@ -210,6 +250,12 @@ func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, _ := body["action"].(string)
+	if action == "terminate" {
+		if err := app.repo.DeleteServer(serverID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task": map[string]any{
 			"id":          uuid.NewString(),

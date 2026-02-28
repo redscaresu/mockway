@@ -76,36 +76,69 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Delete("/private-networks/{pn_id}", app.DeletePrivateNetwork)
 		})
 
+		r.Route("/vpc/v2/regions/{region}", func(r chi.Router) {
+			r.Post("/vpcs", app.CreateVPC)
+			r.Get("/vpcs", app.ListVPCs)
+			r.Get("/vpcs/{vpc_id}", app.GetVPC)
+			r.Delete("/vpcs/{vpc_id}", app.DeleteVPC)
+
+			r.Post("/private-networks", app.CreatePrivateNetwork)
+			r.Get("/private-networks", app.ListPrivateNetworks)
+			r.Get("/private-networks/{pn_id}", app.GetPrivateNetwork)
+			r.Delete("/private-networks/{pn_id}", app.DeletePrivateNetwork)
+		})
+
 		r.Route("/lb/v1/zones/{zone}", func(r chi.Router) {
+			r.Post("/ips", app.CreateLBIP)
+			r.Get("/ips", app.ListLBIPs)
+			r.Get("/ips/{ip_id}", app.GetLBIP)
+			r.Delete("/ips/{ip_id}", app.DeleteLBIP)
+
 			r.Post("/lbs", app.CreateLB)
 			r.Get("/lbs", app.ListLBs)
 			r.Get("/lbs/{lb_id}", app.GetLB)
+			r.Patch("/lbs/{lb_id}", app.UpdateLB)
 			r.Delete("/lbs/{lb_id}", app.DeleteLB)
 
 			r.Post("/frontends", app.CreateFrontend)
 			r.Get("/frontends", app.ListFrontends)
 			r.Get("/frontends/{frontend_id}", app.GetFrontend)
+			r.Put("/frontends/{frontend_id}", app.UpdateFrontend)
+			r.Get("/frontends/{frontend_id}/acls", app.ListFrontendACLs)
 			r.Delete("/frontends/{frontend_id}", app.DeleteFrontend)
 
 			r.Post("/backends", app.CreateBackend)
 			r.Get("/backends", app.ListBackends)
 			r.Get("/backends/{backend_id}", app.GetBackend)
+			r.Put("/backends/{backend_id}", app.UpdateBackend)
 			r.Delete("/backends/{backend_id}", app.DeleteBackend)
 
+			r.Post("/lbs/{lb_id}/backends", app.CreateBackend)
+			r.Get("/lbs/{lb_id}/backends", app.ListBackends)
+			r.Post("/lbs/{lb_id}/frontends", app.CreateFrontend)
+			r.Get("/lbs/{lb_id}/frontends", app.ListFrontends)
+
 			r.Post("/lbs/{lb_id}/private-networks", app.AttachLBPrivateNetwork)
+			r.Post("/lbs/{lb_id}/attach-private-network", app.AttachLBPrivateNetwork)
 			r.Get("/lbs/{lb_id}/private-networks", app.ListLBPrivateNetworks)
 			r.Delete("/lbs/{lb_id}/private-networks/{pn_id}", app.DeleteLBPrivateNetwork)
 		})
 
 		r.Route("/k8s/v1/regions/{region}", func(r chi.Router) {
+			r.Get("/versions", app.ListK8sVersions)
+
 			r.Post("/clusters", app.CreateCluster)
 			r.Get("/clusters", app.ListClusters)
 			r.Get("/clusters/{cluster_id}", app.GetCluster)
+			r.Get("/clusters/{cluster_id}/kubeconfig", app.GetClusterKubeconfig)
+			r.Get("/clusters/{cluster_id}/nodes", app.ListClusterNodes)
+			r.Patch("/clusters/{cluster_id}", app.UpdateCluster)
 			r.Delete("/clusters/{cluster_id}", app.DeleteCluster)
 
 			r.Post("/clusters/{cluster_id}/pools", app.CreatePool)
 			r.Get("/clusters/{cluster_id}/pools", app.ListPools)
 			r.Get("/pools/{pool_id}", app.GetPool)
+			r.Patch("/pools/{pool_id}", app.UpdatePool)
 			r.Delete("/pools/{pool_id}", app.DeletePool)
 		})
 
@@ -113,6 +146,8 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/instances", app.CreateRDBInstance)
 			r.Get("/instances", app.ListRDBInstances)
 			r.Get("/instances/{instance_id}", app.GetRDBInstance)
+			r.Patch("/instances/{instance_id}", app.UpdateRDBInstance)
+			r.Get("/instances/{instance_id}/certificate", app.GetRDBCertificate)
 			r.Delete("/instances/{instance_id}", app.DeleteRDBInstance)
 
 			r.Post("/instances/{instance_id}/databases", app.CreateRDBDatabase)
@@ -122,6 +157,29 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/instances/{instance_id}/users", app.CreateRDBUser)
 			r.Get("/instances/{instance_id}/users", app.ListRDBUsers)
 			r.Delete("/instances/{instance_id}/users/{user_name}", app.DeleteRDBUser)
+
+			r.Put("/instances/{instance_id}/acls", app.SetRDBACLs)
+			r.Get("/instances/{instance_id}/acls", app.ListRDBACLs)
+			r.Delete("/instances/{instance_id}/acls", app.DeleteRDBACLs)
+			r.Put("/instances/{instance_id}/privileges", app.SetRDBPrivileges)
+			r.Get("/instances/{instance_id}/privileges", app.ListRDBPrivileges)
+			r.Put("/instances/{instance_id}/settings", app.SetRDBSettings)
+		})
+
+		r.Route("/redis/v1/zones/{zone}", func(r chi.Router) {
+			r.Post("/clusters", app.CreateRedisCluster)
+			r.Get("/clusters", app.ListRedisClusters)
+			r.Get("/clusters/{cluster_id}", app.GetRedisCluster)
+			r.Patch("/clusters/{cluster_id}", app.UpdateRedisCluster)
+			r.Delete("/clusters/{cluster_id}", app.DeleteRedisCluster)
+		})
+
+		r.Route("/registry/v1/regions/{region}", func(r chi.Router) {
+			r.Post("/namespaces", app.CreateRegistryNamespace)
+			r.Get("/namespaces", app.ListRegistryNamespaces)
+			r.Get("/namespaces/{namespace_id}", app.GetRegistryNamespace)
+			r.Patch("/namespaces/{namespace_id}", app.UpdateRegistryNamespace)
+			r.Delete("/namespaces/{namespace_id}", app.DeleteRegistryNamespace)
 		})
 
 		r.Route("/iam/v1alpha1", func(r chi.Router) {
@@ -145,6 +203,19 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/ssh-keys", app.ListIAMSSHKeys)
 			r.Get("/ssh-keys/{ssh_key_id}", app.GetIAMSSHKey)
 			r.Delete("/ssh-keys/{ssh_key_id}", app.DeleteIAMSSHKey)
+		})
+
+		r.Route("/block/v1alpha1/zones/{zone}", func(r chi.Router) {
+			r.Get("/volumes/{volume_id}", app.GetVolume)
+			r.Delete("/volumes/{volume_id}", app.DeleteVolume)
+		})
+
+		r.Get("/ipam/v1/regions/{region}/ips", app.ListIPAMIPs)
+
+		r.Get("/domain/v2beta1/dns-zones", app.ListDNSZones)
+		r.Route("/domain/v2beta1/dns-zones/{dns_zone}", func(r chi.Router) {
+			r.Patch("/records", app.PatchDomainRecords)
+			r.Get("/records", app.ListDomainRecords)
 		})
 
 		// Legacy alias for scaleway_account_ssh_key.
