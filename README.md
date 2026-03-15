@@ -79,7 +79,7 @@ Each row reflects a verified `apply → plan (no-op) → destroy` cycle against 
 
 `terraform validate` checks syntax. `terraform plan` checks the dependency graph. Neither calls the API, so neither can catch mistakes that only surface when the provider actually makes HTTP requests. mockway fills that gap by enforcing the same FK constraints as the real Scaleway API during a local apply.
 
-Three categories of mistake are consistently missed by standard tooling:
+Three categories of mistake are consistently missed by `validate`, `plan`, and `mock_provider`:
 
 **1. Wrong reference** — a reference that resolves to the wrong value at apply time. `validate` and `plan` see a valid string; mockway returns 404 when the ID doesn't match any stored resource.
 
@@ -88,13 +88,13 @@ Common forms:
 - Wrong resource referenced — autocomplete picks the parent when the child was intended (`scaleway_lb.lb.id` instead of `scaleway_lb_backend.backend.id` — both are UUIDs)
 - Missing resource entirely — a child resource is defined but its parent was never added to the config
 
-Examples: [`misconfigured/app_stack_db_ref`](examples/misconfigured/app_stack_db_ref), [`misconfigured/lb_missing_backend`](examples/misconfigured/lb_missing_backend), [`misconfigured/rdb_child_before_parent`](examples/misconfigured/rdb_child_before_parent)
+Examples: [`misconfigured/app_stack_db_ref`](examples/misconfigured/app_stack_db_ref), [`misconfigured/lb_missing_backend`](examples/misconfigured/lb_missing_backend), [`misconfigured/nic_with_missing_private_network`](examples/misconfigured/nic_with_missing_private_network)
 
-**2. Wrong destroy order** — a parent resource is deleted while children still hold FK references to it. A full `terraform destroy` is safe because Terraform reads the dependency graph and destroys in the right order. The failure only appears with `-target` destroys, manual console deletions, or multi-workspace teardowns where Terraform can't see the full graph.
+**2. Wrong destroy order** — a parent resource is deleted while children still hold FK references to it. A full `terraform destroy` is safe because Terraform reads the dependency graph and destroys in the right order. The failure only appears with `-target` destroys or multi-workspace teardowns where Terraform can't see the full graph.
 
 Example: [`misconfigured/vpc_deleted_before_private_network`](examples/misconfigured/vpc_deleted_before_private_network)
 
-**3. Cross-state orphan** — one Terraform state file owns a shared resource (e.g. an IAM application); another state file creates children that reference it by ID (e.g. API keys and policies passed in as variables). When the first workspace is destroyed, its `terraform plan` shows a clean single-resource deletion — it has no visibility into the other state file. mockway holds state for both workspaces on the same port and returns 409 when the parent is deleted while children still exist.
+**3. Cross-state orphan** — one Terraform state file owns a shared resource (e.g. an IAM application); another state file creates children that reference it by ID. When the first workspace is destroyed, its `terraform plan` shows a clean single-resource deletion — it has no visibility into the other state file. mockway holds state for both workspaces on the same port and returns 409 when the parent is deleted while children still exist.
 
 Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state_orphan)
 
