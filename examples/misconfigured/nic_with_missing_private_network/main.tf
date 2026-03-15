@@ -1,9 +1,8 @@
-# BROKEN: private NIC references a private network that was never created.
+# BROKEN: private NIC references a private network that does not exist.
 #
-# This is a common cross-team pattern: the networking team manages VPCs and
-# private networks in a separate Terraform workspace and passes IDs as
-# variables. If the wrong ID is used — stale value, wrong region, typo —
-# the server comes up but has no network attachment.
+# The private_network_id is passed in as a variable. A wrong value — typo,
+# stale ID, wrong region — means the server is created but has no private
+# network attachment.
 #
 # ── Why standard tooling does not catch this ─────────────────────────────────
 #
@@ -38,24 +37,20 @@
 #
 # ── Fix ───────────────────────────────────────────────────────────────────────
 #
-#   If the private network is managed in a different workspace, read its ID from
-#   remote state rather than a hard-coded string:
+#   Create the private network as a resource and reference it directly:
 #
-#     data "terraform_remote_state" "network" {
-#       backend = "s3"
-#       config  = { bucket = "...", key = "network/terraform.tfstate" }
+#     resource "scaleway_vpc_private_network" "pn" {
+#       name = "example-pn"
 #     }
 #
 #     resource "scaleway_instance_private_nic" "nic" {
 #       server_id          = scaleway_instance_server.web.id
-#       private_network_id = data.terraform_remote_state.network.outputs.private_network_id
+#       private_network_id = scaleway_vpc_private_network.pn.id
 #     }
-#
-#   Or manage everything in one config (see: examples/happy_paths/vpc_and_private_network).
 
 variable "private_network_id" {
   type        = string
-  description = "ID of the private network from the networking team's workspace."
+  description = "ID of the private network to attach to the server."
   default     = "aabbccdd-1234-1234-1234-aabbccddeeff" # Wrong: does not exist in mockway.
 }
 
@@ -77,7 +72,7 @@ resource "scaleway_instance_server" "web" {
 resource "scaleway_instance_private_nic" "nic" {
   server_id = scaleway_instance_server.web.id
 
-  # Wrong: this UUID was passed in from another workspace but the private
-  # network does not exist in the current mockway state.
+  # Wrong: this UUID does not exist in mockway — the private network
+  # was never created.
   private_network_id = var.private_network_id
 }

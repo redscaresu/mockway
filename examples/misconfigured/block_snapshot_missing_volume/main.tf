@@ -1,9 +1,8 @@
-# BROKEN: block snapshot references a hard-coded volume UUID that doesn't exist.
+# BROKEN: block snapshot references a volume UUID that doesn't exist.
 #
-# A snapshot is taken of a volume that was either created in another workspace,
-# deleted, or simply copy-pasted from Scaleway console output. Because both
-# scaleway_block_volume.id and the hard-coded UUID are plain strings, no
-# tooling can distinguish them before apply.
+# The volume_id is a plain string — a UUID copy-pasted from the Scaleway
+# console or left over from a deleted resource. No static analysis can
+# distinguish a valid UUID from a stale one before apply.
 #
 # ── Why standard tooling does not catch this ─────────────────────────────────
 #
