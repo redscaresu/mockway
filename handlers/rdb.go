@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -108,20 +109,25 @@ func (app *Application) GetRDBCertificate(w http.ResponseWriter, r *http.Request
 		writeDomainError(w, err)
 		return
 	}
-	// Return a fake certificate that the provider expects.
+	// The SDK's File struct has Content []byte, so JSON expects base64-encoded data.
+	const pem = "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n"
 	writeJSON(w, http.StatusOK, map[string]any{
-		"certificate": map[string]any{
-			"content": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n",
-		},
+		"content": base64.StdEncoding.EncodeToString([]byte(pem)),
 	})
 }
 
 func (app *Application) DeleteRDBInstance(w http.ResponseWriter, r *http.Request) {
-	if err := app.repo.DeleteRDBInstance(chi.URLParam(r, "instance_id")); err != nil {
+	instanceID := chi.URLParam(r, "instance_id")
+	out, err := app.repo.GetRDBInstance(instanceID)
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeNoContent(w)
+	if err := app.repo.DeleteRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (app *Application) CreateRDBDatabase(w http.ResponseWriter, r *http.Request) {
@@ -282,4 +288,296 @@ func (app *Application) SetRDBSettings(w http.ResponseWriter, r *http.Request) {
 		settings = []any{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings})
+}
+
+// --- RDB Read Replicas ---
+
+func (app *Application) CreateRDBReadReplica(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateRDBReadReplica(chi.URLParam(r, "region"), chi.URLParam(r, "instance_id"), body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) GetRDBReadReplica(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.GetRDBReadReplica(chi.URLParam(r, "read_replica_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) DeleteRDBReadReplica(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.DeleteRDBReadReplica(chi.URLParam(r, "read_replica_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) CreateRDBReadReplicaEndpoint(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateRDBReadReplicaEndpoint(chi.URLParam(r, "read_replica_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) PromoteRDBReadReplica(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.PromoteRDBReadReplica(chi.URLParam(r, "read_replica_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) ResetRDBReadReplica(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.ResetRDBReadReplica(chi.URLParam(r, "read_replica_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// --- RDB Snapshots ---
+
+func (app *Application) CreateRDBSnapshot(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateRDBSnapshot(chi.URLParam(r, "region"), chi.URLParam(r, "instance_id"), body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) GetRDBSnapshot(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.GetRDBSnapshot(chi.URLParam(r, "snapshot_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) ListRDBSnapshots(w http.ResponseWriter, r *http.Request) {
+	items, err := app.repo.ListRDBSnapshots(chi.URLParam(r, "region"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeList(w, "snapshots", items)
+}
+
+func (app *Application) UpdateRDBSnapshot(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateRDBSnapshot(chi.URLParam(r, "snapshot_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) DeleteRDBSnapshot(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.DeleteRDBSnapshot(chi.URLParam(r, "snapshot_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) CreateRDBInstanceFromSnapshot(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateRDBInstanceFromSnapshot(chi.URLParam(r, "region"), chi.URLParam(r, "snapshot_id"), body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// --- RDB Backups ---
+
+func (app *Application) CreateRDBBackup(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	instanceID := r.URL.Query().Get("instance_id")
+	if instanceID == "" {
+		instanceID, _ = body["instance_id"].(string)
+	}
+	out, err := app.repo.CreateRDBBackup(chi.URLParam(r, "region"), instanceID, body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) GetRDBBackup(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.GetRDBBackup(chi.URLParam(r, "backup_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) ListRDBBackups(w http.ResponseWriter, r *http.Request) {
+	instanceID := r.URL.Query().Get("instance_id")
+	items, err := app.repo.ListRDBBackups(chi.URLParam(r, "region"), instanceID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeList(w, "database_backups", items)
+}
+
+func (app *Application) UpdateRDBBackup(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateRDBBackup(chi.URLParam(r, "backup_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) DeleteRDBBackup(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.DeleteRDBBackup(chi.URLParam(r, "backup_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) ExportRDBBackup(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.ExportRDBBackup(chi.URLParam(r, "backup_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) RestoreRDBBackup(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	instanceID, _ := body["instance_id"].(string)
+	out, err := app.repo.RestoreRDBBackup(instanceID, chi.URLParam(r, "backup_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// --- RDB Certificate, Logs, Endpoints ---
+
+func (app *Application) RenewRDBCertificate(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetRDBInstance(chi.URLParam(r, "instance_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"certificate": map[string]any{
+			"content": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n",
+		},
+	})
+}
+
+func (app *Application) PrepareRDBInstanceLogs(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}, "total_count": 0})
+}
+
+func (app *Application) CreateRDBEndpoint(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateRDBEndpoint(chi.URLParam(r, "instance_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (app *Application) DeleteRDBEndpoint(w http.ResponseWriter, r *http.Request) {
+	if err := app.repo.DeleteRDBEndpoint(chi.URLParam(r, "endpoint_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (app *Application) ListRDBNodeTypes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"node_types": []any{
+			map[string]any{"name": "DB-DEV-S", "stock_status": "available", "memory": float64(1000000000), "vcpus": float64(2)},
+			map[string]any{"name": "DB-DEV-M", "stock_status": "available", "memory": float64(2000000000), "vcpus": float64(2)},
+			map[string]any{"name": "DB-DEV-L", "stock_status": "available", "memory": float64(4000000000), "vcpus": float64(4)},
+			map[string]any{"name": "DB-GP-XS", "stock_status": "available", "memory": float64(8000000000), "vcpus": float64(4)},
+		},
+		"total_count": 4,
+	})
+}
+
+// CreateRDBReadReplicaTopLevel handles POST /rdb/v1/regions/{region}/read-replicas
+// where instance_id is provided in the request body (SDK top-level path).
+func (app *Application) CreateRDBReadReplicaTopLevel(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	instanceID, _ := body["instance_id"].(string)
+	out, err := app.repo.CreateRDBReadReplica(chi.URLParam(r, "region"), instanceID, body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

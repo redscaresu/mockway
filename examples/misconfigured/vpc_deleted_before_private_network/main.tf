@@ -5,31 +5,37 @@
 # "app" state file. The VPC workspace is torn down first, leaving private
 # networks that still reference the deleted VPC.
 #
-# To reproduce here: apply both resources normally, then destroy only the VPC:
+# To reproduce here: apply both resources, remove the private network from
+# Terraform's view (simulating it being managed in a separate workspace), then
+# attempt to destroy only the VPC:
 #
 #   terraform apply -auto-approve
+#   terraform state rm scaleway_vpc_private_network.pn  # simulate separate workspace
 #   terraform destroy -target scaleway_vpc.vpc -auto-approve
 #
 # ── Why standard tooling does not catch this ─────────────────────────────────
 #
 #   terraform validate  ✓ passes — the config is syntactically correct
-#   terraform plan      ✓ passes — a targeted destroy of the VPC is valid to plan
-#   terraform destroy   ✓ passes — a full destroy works because Terraform sees the
-#                                  vpc_id reference and destroys the private network
-#                                  first, then the VPC
+#   terraform plan      ✓ passes — after state rm, Terraform sees only the VPC;
+#                                  a destroy of 1 resource looks fine
+#   terraform destroy   ✓ passes — a full destroy (without state rm) works because
+#                                  Terraform sees the vpc_id reference and destroys
+#                                  the private network first, then the VPC
 #
-#   The failure only surfaces when the VPC is destroyed out of order: a
-#   -target destroy, a manual console deletion, or a separate workspace teardown.
-#   None of these scenarios are visible to terraform validate or terraform plan.
+#   The failure only surfaces when the private network is in a SEPARATE state file
+#   (different workspace or module) and the VPC workspace is torn down first.
+#   terraform state rm simulates this split-state scenario locally.
 #
 # ── What mockway catches ──────────────────────────────────────────────────────
 #
+#   $ terraform state rm scaleway_vpc_private_network.pn
 #   $ terraform destroy -target scaleway_vpc.vpc -auto-approve
 #   ...
 #   Error: deleting scaleway_vpc.vpc
 #     scaleway-sdk-go: http error 409: conflict: cannot delete: dependents exist
 #
-#   mockway refuses to delete the VPC because scaleway_vpc_private_network.pn
+#   After state rm, Terraform no longer knows about the private network and sends
+#   a bare DELETE for the VPC. mockway refuses because scaleway_vpc_private_network.pn
 #   still holds a foreign key reference to it.
 #
 # ── Why this matters ──────────────────────────────────────────────────────────
@@ -61,5 +67,5 @@ resource "scaleway_vpc_private_network" "pn" {
 
 output "vpc_id" {
   value       = scaleway_vpc.vpc.id
-  description = "Try: terraform destroy -target scaleway_vpc.vpc to see the 409."
+  description = "After apply: terraform state rm scaleway_vpc_private_network.pn && terraform destroy -target scaleway_vpc.vpc"
 }

@@ -162,7 +162,7 @@ func (r *Repository) init() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS k8s_pools (
 			id TEXT PRIMARY KEY,
-			cluster_id TEXT NOT NULL REFERENCES k8s_clusters(id),
+			cluster_id TEXT NOT NULL REFERENCES k8s_clusters(id) ON DELETE CASCADE,
 			region TEXT NOT NULL,
 			data JSON NOT NULL
 		)`,
@@ -172,13 +172,13 @@ func (r *Repository) init() error {
 			data JSON NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS rdb_databases (
-			instance_id TEXT NOT NULL REFERENCES rdb_instances(id),
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			data JSON NOT NULL,
 			PRIMARY KEY (instance_id, name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS rdb_users (
-			instance_id TEXT NOT NULL REFERENCES rdb_instances(id),
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			data JSON NOT NULL,
 			PRIMARY KEY (instance_id, name)
@@ -223,7 +223,78 @@ func (r *Repository) init() error {
 			id TEXT PRIMARY KEY,
 			data JSON NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS iam_rules (
+			id TEXT PRIMARY KEY,
+			policy_id TEXT NOT NULL REFERENCES iam_policies(id) ON DELETE CASCADE,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_users (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_groups (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS iam_group_members (
+			group_id TEXT NOT NULL REFERENCES iam_groups(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL REFERENCES iam_users(id) ON DELETE CASCADE,
+			PRIMARY KEY (group_id, user_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS block_volumes (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS block_snapshots (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			volume_id TEXT REFERENCES block_volumes(id),
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS ipam_ips (
+			id TEXT PRIMARY KEY,
+			region TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS rdb_read_replicas (
+			id TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
+			region TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS rdb_snapshots (
+			id TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
+			region TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS rdb_backups (
+			id TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
+			region TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS lb_acls (
+			id TEXT PRIMARY KEY,
+			frontend_id TEXT NOT NULL REFERENCES lb_frontends(id) ON DELETE CASCADE,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS lb_routes (
+			id TEXT PRIMARY KEY,
+			lb_id TEXT NOT NULL REFERENCES lbs(id) ON DELETE CASCADE,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS lb_certificates (
+			id TEXT PRIMARY KEY,
+			lb_id TEXT NOT NULL REFERENCES lbs(id) ON DELETE CASCADE,
+			data JSON NOT NULL
+		)`,
 	}
+
+	stmts = append(stmts, `CREATE TABLE IF NOT EXISTS schema_versions (
+		version INTEGER PRIMARY KEY
+	)`)
 
 	for _, stmt := range stmts {
 		if _, err := r.db.Exec(stmt); err != nil {
@@ -231,6 +302,92 @@ func (r *Repository) init() error {
 		}
 	}
 
+	return r.migrate()
+}
+
+// migrate runs versioned schema migrations for tables that already exist but
+// need their FK constraints updated (SQLite CREATE TABLE IF NOT EXISTS is a
+// no-op on existing tables, so we have to recreate them).
+func (r *Repository) migrate() error {
+	type migration struct {
+		version int
+		stmts   []string
+	}
+
+	migrations := []migration{
+		{
+			// Add ON DELETE CASCADE to k8s_pools, rdb_databases, rdb_users, and
+			// iam_group_members.user_id so that deleting a parent row also removes
+			// the child rows on existing file-backed databases.
+			version: 1,
+			stmts: []string{
+				// k8s_pools
+				`CREATE TABLE IF NOT EXISTS k8s_pools_new (
+					id TEXT PRIMARY KEY,
+					cluster_id TEXT NOT NULL REFERENCES k8s_clusters(id) ON DELETE CASCADE,
+					region TEXT NOT NULL,
+					data JSON NOT NULL
+				)`,
+				`INSERT OR IGNORE INTO k8s_pools_new SELECT id, cluster_id, region, data FROM k8s_pools`,
+				`DROP TABLE k8s_pools`,
+				`ALTER TABLE k8s_pools_new RENAME TO k8s_pools`,
+				// rdb_databases
+				`CREATE TABLE IF NOT EXISTS rdb_databases_new (
+					instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
+					name TEXT NOT NULL,
+					data JSON NOT NULL,
+					PRIMARY KEY (instance_id, name)
+				)`,
+				`INSERT OR IGNORE INTO rdb_databases_new SELECT instance_id, name, data FROM rdb_databases`,
+				`DROP TABLE rdb_databases`,
+				`ALTER TABLE rdb_databases_new RENAME TO rdb_databases`,
+				// rdb_users
+				`CREATE TABLE IF NOT EXISTS rdb_users_new (
+					instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
+					name TEXT NOT NULL,
+					data JSON NOT NULL,
+					PRIMARY KEY (instance_id, name)
+				)`,
+				`INSERT OR IGNORE INTO rdb_users_new SELECT instance_id, name, data FROM rdb_users`,
+				`DROP TABLE rdb_users`,
+				`ALTER TABLE rdb_users_new RENAME TO rdb_users`,
+				// iam_group_members
+				`CREATE TABLE IF NOT EXISTS iam_group_members_new (
+					group_id TEXT NOT NULL REFERENCES iam_groups(id) ON DELETE CASCADE,
+					user_id TEXT NOT NULL REFERENCES iam_users(id) ON DELETE CASCADE,
+					PRIMARY KEY (group_id, user_id)
+				)`,
+				`INSERT OR IGNORE INTO iam_group_members_new SELECT group_id, user_id FROM iam_group_members`,
+				`DROP TABLE iam_group_members`,
+				`ALTER TABLE iam_group_members_new RENAME TO iam_group_members`,
+			},
+		},
+	}
+
+	for _, m := range migrations {
+		var applied int
+		_ = r.db.QueryRow(`SELECT 1 FROM schema_versions WHERE version = ?`, m.version).Scan(&applied)
+		if applied == 1 {
+			continue
+		}
+		// Disable FK checks during table recreation to avoid constraint errors
+		// while the _new tables are being populated.
+		if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("migration %d: disable FK: %w", m.version, err)
+		}
+		for _, stmt := range m.stmts {
+			if _, err := r.db.Exec(stmt); err != nil {
+				_, _ = r.db.Exec(`PRAGMA foreign_keys = ON`)
+				return fmt.Errorf("migration %d: %w", m.version, err)
+			}
+		}
+		if _, err := r.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+			return fmt.Errorf("migration %d: re-enable FK: %w", m.version, err)
+		}
+		if _, err := r.db.Exec(`INSERT INTO schema_versions (version) VALUES (?)`, m.version); err != nil {
+			return fmt.Errorf("migration %d: record version: %w", m.version, err)
+		}
+	}
 	return nil
 }
 
@@ -257,26 +414,39 @@ func (r *Repository) Exists(table, idColumn, id string) (bool, error) {
 
 func (r *Repository) Reset() error {
 	tables := []string{
+		"lb_acls",
+		"lb_routes",
+		"lb_certificates",
 		"lb_private_networks",
 		"lb_frontends",
 		"lb_backends",
 		"lbs",
 		"lb_ips",
+		"block_snapshots",
+		"block_volumes",
+		"ipam_ips",
 		"instance_private_nics",
 		"instance_ips",
 		"instance_servers",
 		"instance_security_groups",
 		"k8s_pools",
 		"k8s_clusters",
+		"rdb_backups",
+		"rdb_snapshots",
+		"rdb_read_replicas",
 		"rdb_privileges",
 		"rdb_databases",
 		"rdb_users",
 		"rdb_instances",
 		"redis_clusters",
 		"registry_namespaces",
+		"iam_rules",
 		"iam_api_keys",
 		"iam_policies",
 		"iam_ssh_keys",
+		"iam_group_members",
+		"iam_groups",
+		"iam_users",
 		"iam_applications",
 		"domain_records",
 		"private_networks",
@@ -674,24 +844,36 @@ func (r *Repository) GetSecurityGroupRules(id string) ([]any, error) {
 	return rules, nil
 }
 
+func (r *Repository) SetServerState(id, state string) error {
+	server, err := r.getJSONByID("instance_servers", "id", id)
+	if err != nil {
+		return err
+	}
+	server["state"] = state
+	server["modification_date"] = nowRFC3339()
+	return r.updateJSONByID("instance_servers", "id", id, server)
+}
+
 func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
 	now := nowRFC3339()
 	data["zone"] = zone
-	data["state"] = "running"
+	data["state"] = "stopped"
 	data["creation_date"] = now
 	data["modification_date"] = now
 	var resolvedIPs []any
 	if rawIPs, ok := data["public_ips"].([]any); ok {
 		for _, raw := range rawIPs {
 			if ipID, ok := raw.(string); ok && ipID != "" {
-				if ipRec, err := r.GetIP(ipID); err == nil {
-					resolvedIPs = append(resolvedIPs, map[string]any{
-						"id":      ipID,
-						"address": ipRec["address"],
-						"dynamic": false,
-					})
+				ipRec, err := r.GetIP(ipID)
+				if err != nil {
+					return nil, models.ErrNotFound
 				}
+				resolvedIPs = append(resolvedIPs, map[string]any{
+					"id":      ipID,
+					"address": ipRec["address"],
+					"dynamic": false,
+				})
 			}
 		}
 	}
@@ -767,6 +949,32 @@ func (r *Repository) DeleteServer(id string) error {
 		return models.ErrNotFound
 	}
 	return tx.Commit()
+}
+
+// DeleteInstanceVolume removes a volume from the embedded volumes map inside a server.
+func (r *Repository) DeleteInstanceVolume(zone, volumeID string) error {
+	servers, err := r.listJSON("instance_servers", "zone", zone)
+	if err != nil {
+		return err
+	}
+	for _, server := range servers {
+		volumes, ok := server["volumes"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, raw := range volumes {
+			vol, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if id, _ := vol["id"].(string); id == volumeID {
+				delete(volumes, key)
+				server["volumes"] = volumes
+				return r.updateJSONByID("instance_servers", "id", server["id"].(string), server)
+			}
+		}
+	}
+	return models.ErrNotFound
 }
 
 func (r *Repository) GetInstanceVolume(zone, volumeID string) (map[string]any, error) {
@@ -1042,7 +1250,11 @@ func (r *Repository) CreateFrontend(data map[string]any) (map[string]any, error)
 		}
 	}
 	if backendID, ok := data["backend_id"].(string); ok && backendID != "" {
-		data["backend"] = map[string]any{"id": backendID}
+		backend, err := r.GetBackend(backendID)
+		if err != nil {
+			return nil, models.ErrNotFound
+		}
+		data["backend"] = backend
 	}
 	return r.createSimple("lb_frontends", "lb_id", lbID, data)
 }
@@ -1066,6 +1278,13 @@ func (r *Repository) UpdateFrontend(id string, patch map[string]any) (map[string
 			continue
 		}
 		next[k] = v
+	}
+	if backendID, ok := next["backend_id"].(string); ok && backendID != "" {
+		backend, err := r.GetBackend(backendID)
+		if err != nil {
+			return nil, models.ErrNotFound
+		}
+		next["backend"] = backend
 	}
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_frontends", "id", id, next); err != nil {
@@ -1103,7 +1322,7 @@ func (r *Repository) CreateBackend(data map[string]any) (map[string]any, error) 
 		data["timeout_queue"] = "0s"
 	}
 	if _, ok := data["on_marked_down_action"]; !ok {
-		data["on_marked_down_action"] = "none"
+		data["on_marked_down_action"] = "on_marked_down_action_none"
 	}
 	if _, ok := data["health_check"]; !ok {
 		data["health_check"] = map[string]any{
@@ -1332,6 +1551,14 @@ func (r *Repository) CreatePool(region, clusterID string, data map[string]any) (
 		// Default zone from region.
 		data["zone"] = region + "-1"
 	}
+	if _, ok := data["autohealing"]; !ok {
+		// Real API defaults autohealing to false; provider reads this field and
+		// stores it in state — missing it causes perpetual drift.
+		data["autohealing"] = false
+	}
+	if _, ok := data["autoscaling"]; !ok {
+		data["autoscaling"] = false
+	}
 
 	return r.createSimple("k8s_pools", "region", region, data, colVal{name: "cluster_id", val: clusterID})
 }
@@ -1340,6 +1567,10 @@ func (r *Repository) GetPool(id string) (map[string]any, error) {
 }
 func (r *Repository) ListPoolsByCluster(clusterID string) ([]map[string]any, error) {
 	return r.listJSON("k8s_pools", "cluster_id", clusterID)
+}
+
+func (r *Repository) ListAllPools() ([]map[string]any, error) {
+	return r.listJSON("k8s_pools", "", "")
 }
 func (r *Repository) UpdatePool(id string, patch map[string]any) (map[string]any, error) {
 	current, err := r.getJSONByID("k8s_pools", "id", id)
@@ -1371,13 +1602,36 @@ func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[
 	data["updated_at"] = now
 	port := rdbPortFromEngine(data["engine"])
 	if _, ok := data["endpoints"]; !ok {
-		data["endpoints"] = []any{map[string]any{"ip": fakePublicIP(), "port": port}}
+		// The provider classifies endpoint type by checking load_balancer != nil.
+		// The id is required for endpoint deletion references.
+		data["endpoints"] = []any{map[string]any{
+			"id":              newID(),
+			"ip":              fakePublicIP(),
+			"port":            port,
+			"name":            nil,
+			"load_balancer":   map[string]any{},
+			"private_network": nil,
+		}}
 	}
 	// Fields required by the TF provider's ResourceRdbInstanceRead to avoid nil derefs.
 	if _, ok := data["volume"]; !ok {
 		data["volume"] = map[string]any{"type": "lssd", "size": float64(10000000000)}
 	}
-	if _, ok := data["backup_schedule"]; !ok {
+	// The Terraform provider sends disable_backup as a flat field; translate it
+	// to backup_schedule.disabled so that GET returns the shape the provider reads.
+	if v, ok := data["disable_backup"]; ok {
+		disabled, _ := v.(bool)
+		if _, hasBS := data["backup_schedule"]; !hasBS {
+			data["backup_schedule"] = map[string]any{
+				"disabled":  disabled,
+				"frequency": 24,
+				"retention": 7,
+			}
+		} else if bs, ok := data["backup_schedule"].(map[string]any); ok {
+			bs["disabled"] = disabled
+		}
+		delete(data, "disable_backup")
+	} else if _, ok := data["backup_schedule"]; !ok {
 		data["backup_schedule"] = map[string]any{
 			"disabled":  false,
 			"frequency": 24,
@@ -1720,6 +1974,29 @@ func (r *Repository) CreateIAMPolicy(data map[string]any) (map[string]any, error
 	if err := r.insertJSON("iam_policies", []colVal{{name: "id", val: policyID}, {name: "application_id", val: appID}}, data); err != nil {
 		return nil, err
 	}
+
+	// If the provider included rules in the create body, store them in iam_rules so
+	// GET /iam/v1alpha1/rules?policy_id=xxx returns them on the subsequent read.
+	if rulesRaw, ok := data["rules"]; ok {
+		if rules, ok := rulesRaw.([]any); ok {
+			for _, r2 := range rules {
+				ruleData, ok := r2.(map[string]any)
+				if !ok {
+					continue
+				}
+				ruleData = cloneMap(ruleData)
+				ruleData["id"] = newID()
+				ruleData["policy_id"] = policyID
+				if err := r.insertJSON("iam_rules", []colVal{
+					{name: "id", val: ruleData["id"]},
+					{name: "policy_id", val: policyID},
+				}, ruleData); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	return data, nil
 }
 
@@ -1733,6 +2010,350 @@ func (r *Repository) ListIAMPolicies() ([]map[string]any, error) {
 
 func (r *Repository) DeleteIAMPolicy(id string) error {
 	return r.deleteBy("iam_policies", "id = ?", id)
+}
+
+func (r *Repository) CreateIAMRule(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	id := newID()
+	data["id"] = id
+	policyID, _ := data["policy_id"].(string)
+	if err := r.insertJSON("iam_rules", []colVal{{name: "id", val: id}, {name: "policy_id", val: policyID}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) ListIAMRulesByPolicy(policyID string) ([]map[string]any, error) {
+	return r.listJSON("iam_rules", "policy_id", policyID)
+}
+
+// SetIAMRules replaces all rules for a policy (PUT /iam/v1alpha1/rules).
+func (r *Repository) SetIAMRules(policyID string, rules []any) ([]map[string]any, error) {
+	if _, err := r.getJSONByID("iam_policies", "id", policyID); err != nil {
+		return nil, err
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM iam_rules WHERE policy_id = ?", policyID); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		ruleMap, ok := rule.(map[string]any)
+		if !ok {
+			continue
+		}
+		ruleMap = cloneMap(ruleMap)
+		id := newID()
+		ruleMap["id"] = id
+		ruleMap["policy_id"] = policyID
+		data, err := json.Marshal(ruleMap)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec("INSERT INTO iam_rules (id, policy_id, data) VALUES (?, ?, ?)", id, policyID, string(data)); err != nil {
+			return nil, err
+		}
+		result = append(result, ruleMap)
+	}
+	return result, tx.Commit()
+}
+
+func (r *Repository) UpdateVPC(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("vpcs", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	// Keep the indexed region SQL column in sync so ListVPCs filtering stays correct.
+	region, _ := next["region"].(string)
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.db.Exec(`UPDATE vpcs SET data = ?, region = ? WHERE id = ?`, b, region, id); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdatePrivateNetwork(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("private_networks", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	// Keep vpc_id and region SQL columns in sync so FK cascades and list
+	// filtering remain correct after a PATCH that moves the network to a new VPC.
+	vpcID, _ := next["vpc_id"].(string)
+	region, _ := next["region"].(string)
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	var vpcIDArg any
+	if vpcID != "" {
+		vpcIDArg = vpcID
+	}
+	if _, err := r.db.Exec(
+		`UPDATE private_networks SET data = ?, vpc_id = ?, region = ? WHERE id = ?`,
+		b, vpcIDArg, region, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_servers", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["modification_date"] = nowRFC3339()
+
+	// Reconcile security_group and security_group_id so that both JSON fields
+	// and the SQL FK column stay consistent after a patch.
+	// Priority: explicit security_group_id in the patch > security_group.id from
+	// the merged doc > existing security_group_id from the merged doc.
+	var sgID string
+	if patchedSGID, ok := patch["security_group_id"].(string); ok {
+		// Explicit patch for security_group_id (may be "" to detach).
+		sgID = patchedSGID
+		next["security_group_id"] = sgID
+		if sgID == "" {
+			delete(next, "security_group")
+		} else {
+			// Rebuild the embedded security_group object from the stored record
+			// so that security_group.id and security_group.name are consistent.
+			sgName := sgID // fallback: use ID as name if lookup fails
+			if sgRecord, err := r.GetSecurityGroup(sgID); err == nil {
+				if n, ok := sgRecord["name"].(string); ok && n != "" {
+					sgName = n
+				}
+			}
+			next["security_group"] = map[string]any{"id": sgID, "name": sgName}
+		}
+	} else if sgStr, ok := next["security_group"].(string); ok && sgStr != "" {
+		// The Scaleway SDK sometimes sends security_group as a plain string (UUID).
+		sgID = sgStr
+		next["security_group_id"] = sgID
+		sgName := sgID
+		if sgRecord, err := r.GetSecurityGroup(sgID); err == nil {
+			if n, ok := sgRecord["name"].(string); ok && n != "" {
+				sgName = n
+			}
+		}
+		next["security_group"] = map[string]any{"id": sgID, "name": sgName}
+	} else if sg, ok := next["security_group"].(map[string]any); ok {
+		if v, ok := sg["id"].(string); ok {
+			sgID = v
+			next["security_group_id"] = sgID
+		}
+	} else {
+		sgID, _ = next["security_group_id"].(string)
+	}
+
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	var sgIDArg any
+	if sgID != "" {
+		sgIDArg = sgID
+	}
+	_, err = r.db.Exec(
+		`UPDATE instance_servers SET data = ?, security_group_id = ? WHERE id = ?`,
+		b, sgIDArg, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_ips", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	// The Scaleway API sends the server reference as "server" (a nullable string
+	// value), not "server_id". Normalise both field names so that attach/detach
+	// works regardless of which name the caller uses.
+	if s, ok := patch["server"]; ok {
+		serverVal, _ := s.(string)
+		next["server_id"] = serverVal
+		delete(next, "server")
+	}
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	// Keep server_id SQL column in sync so cascade/detach logic stays correct.
+	serverID, _ := next["server_id"].(string)
+	var serverIDArg any
+	if serverID != "" {
+		serverIDArg = serverID
+	}
+	_, err = r.db.Exec(
+		`UPDATE instance_ips SET data = ?, server_id = ? WHERE id = ?`,
+		b, serverIDArg, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateLBIP(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_ips", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	if err := r.updateJSONByID("lb_ips", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIAMApplication(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_applications", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("iam_applications", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIAMAPIKey(accessKey string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_api_keys", "access_key", accessKey)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "access_key" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	delete(next, "secret_key") // never return secret_key on update
+	// Keep application_id SQL column in sync when the FK field changes.
+	var appIDArg any
+	if v, ok := next["application_id"].(string); ok && v != "" {
+		appIDArg = v
+	}
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	_, err = r.db.Exec(
+		`UPDATE iam_api_keys SET data = ?, application_id = ? WHERE access_key = ?`,
+		b, appIDArg, accessKey,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIAMPolicy(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_policies", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	// Keep application_id SQL column in sync when the FK field changes.
+	var appIDArg any
+	if v, ok := next["application_id"].(string); ok && v != "" {
+		appIDArg = v
+	}
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	_, err = r.db.Exec(
+		`UPDATE iam_policies SET data = ?, application_id = ? WHERE id = ?`,
+		b, appIDArg, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIAMSSHKey(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_ssh_keys", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("iam_ssh_keys", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 
 func (r *Repository) CreateIAMSSHKey(data map[string]any) (map[string]any, error) {
@@ -1801,7 +2422,7 @@ func (r *Repository) CreateRedisCluster(zone string, data map[string]any) (map[s
 		data["public_network"] = []any{}
 	}
 	if _, ok := data["settings"]; !ok {
-		data["settings"] = map[string]any{}
+		data["settings"] = []any{}
 	}
 	if _, ok := data["user_name"]; !ok {
 		data["user_name"] = "default"
@@ -1846,6 +2467,850 @@ func (r *Repository) UpdateRedisCluster(id string, patch map[string]any) (map[st
 
 func (r *Repository) DeleteRedisCluster(id string) error {
 	return r.deleteBy("redis_clusters", "id = ?", id)
+}
+
+// --- IAM Users ---
+
+func (r *Repository) CreateIAMUser(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["status"]; !ok {
+		data["status"] = "activated"
+	}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	id := newID()
+	data["id"] = id
+	if err := r.insertJSON("iam_users", []colVal{{name: "id", val: id}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMUser(id string) (map[string]any, error) {
+	return r.getJSONByID("iam_users", "id", id)
+}
+
+func (r *Repository) ListIAMUsers() ([]map[string]any, error) {
+	return r.listJSON("iam_users", "", "")
+}
+
+func (r *Repository) UpdateIAMUser(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_users", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("iam_users", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) UpdateIAMUserUsername(id string, username string) (map[string]any, error) {
+	return r.UpdateIAMUser(id, map[string]any{"username": username})
+}
+
+func (r *Repository) DeleteIAMUser(id string) error {
+	return r.deleteBy("iam_users", "id = ?", id)
+}
+
+// --- IAM Groups ---
+
+func (r *Repository) getIAMGroupWithMembers(id string) (map[string]any, error) {
+	data, err := r.getJSONByID("iam_groups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.Query("SELECT user_id FROM iam_group_members WHERE group_id = ?", id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	userIDs := []any{}
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err != nil {
+			return nil, err
+		}
+		userIDs = append(userIDs, uid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	data["user_ids"] = userIDs
+	return data, nil
+}
+
+func (r *Repository) CreateIAMGroup(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	data["user_ids"] = []any{}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	id := newID()
+	data["id"] = id
+	if err := r.insertJSON("iam_groups", []colVal{{name: "id", val: id}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetIAMGroup(id string) (map[string]any, error) {
+	return r.getIAMGroupWithMembers(id)
+}
+
+func (r *Repository) ListIAMGroups() ([]map[string]any, error) {
+	items, err := r.listJSON("iam_groups", "", "")
+	if err != nil {
+		return nil, err
+	}
+	for i, item := range items {
+		id, _ := item["id"].(string)
+		if id != "" {
+			enriched, err := r.getIAMGroupWithMembers(id)
+			if err == nil {
+				items[i] = enriched
+			}
+		}
+	}
+	return items, nil
+}
+
+func (r *Repository) UpdateIAMGroup(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("iam_groups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("iam_groups", "id", id, next); err != nil {
+		return nil, err
+	}
+	return r.getIAMGroupWithMembers(id)
+}
+
+func (r *Repository) DeleteIAMGroup(id string) error {
+	return r.deleteBy("iam_groups", "id = ?", id)
+}
+
+func (r *Repository) AddIAMGroupMember(groupID, userID string) (map[string]any, error) {
+	_, err := r.db.Exec("INSERT OR IGNORE INTO iam_group_members (group_id, user_id) VALUES (?, ?)", groupID, userID)
+	if err != nil {
+		return nil, mapInsertSQLError(err) // FOREIGN KEY → ErrNotFound (user or group missing)
+	}
+	return r.getIAMGroupWithMembers(groupID)
+}
+
+func (r *Repository) RemoveIAMGroupMember(groupID, userID string) (map[string]any, error) {
+	_, err := r.db.Exec("DELETE FROM iam_group_members WHERE group_id = ? AND user_id = ?", groupID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return r.getIAMGroupWithMembers(groupID)
+}
+
+func (r *Repository) SetIAMGroupMembers(groupID string, userIDs []string) (map[string]any, error) {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM iam_group_members WHERE group_id = ?", groupID); err != nil {
+		return nil, err
+	}
+	for _, uid := range userIDs {
+		if _, err := tx.Exec("INSERT INTO iam_group_members (group_id, user_id) VALUES (?, ?)", groupID, uid); err != nil {
+			return nil, mapInsertSQLError(err) // FOREIGN KEY → ErrNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r.getIAMGroupWithMembers(groupID)
+}
+
+// --- Block Volumes ---
+
+func (r *Repository) CreateBlockVolume(zone string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["zone"] = zone
+	data["status"] = "available"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["size"]; !ok {
+		data["size"] = float64(20000000000)
+	}
+	if _, ok := data["type"]; !ok {
+		data["type"] = "sbs_5k"
+	}
+	if _, ok := data["storage_class"]; !ok {
+		data["storage_class"] = "sbs"
+	}
+	// Provider reads volume.Specs.PerfIops — store the field to avoid perpetual diff.
+	if _, ok := data["specs"]; !ok {
+		iops := float64(5000)
+		if t, _ := data["type"].(string); t == "sbs_15k" {
+			iops = 15000
+		}
+		data["specs"] = map[string]any{"perf_iops": iops}
+	}
+	return r.createSimple("block_volumes", "zone", zone, data)
+}
+
+func (r *Repository) GetBlockVolume(id string) (map[string]any, error) {
+	return r.getJSONByID("block_volumes", "id", id)
+}
+
+func (r *Repository) ListBlockVolumes(zone string) ([]map[string]any, error) {
+	return r.listJSON("block_volumes", "zone", zone)
+}
+
+func (r *Repository) UpdateBlockVolume(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("block_volumes", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	// Recompute perf_iops when the volume type changes.
+	if newType, ok := next["type"].(string); ok {
+		iops := float64(5000)
+		if newType == "sbs_15k" {
+			iops = 15000
+		}
+		next["specs"] = map[string]any{"perf_iops": iops}
+	}
+	if err := r.updateJSONByID("block_volumes", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteBlockVolume(id string) error {
+	return r.deleteBy("block_volumes", "id = ?", id)
+}
+
+func (r *Repository) CreateBlockSnapshot(zone, volumeID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["zone"] = zone
+	data["volume_id"] = volumeID
+	data["status"] = "available"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["size"]; !ok {
+		data["size"] = float64(20000000000)
+	}
+	return r.createSimple("block_snapshots", "zone", zone, data, colVal{name: "volume_id", val: volumeID})
+}
+
+func (r *Repository) GetBlockSnapshot(id string) (map[string]any, error) {
+	return r.getJSONByID("block_snapshots", "id", id)
+}
+
+func (r *Repository) ListBlockSnapshots(zone string) ([]map[string]any, error) {
+	return r.listJSON("block_snapshots", "zone", zone)
+}
+
+func (r *Repository) UpdateBlockSnapshot(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("block_snapshots", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("block_snapshots", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteBlockSnapshot(id string) error {
+	return r.deleteBy("block_snapshots", "id = ?", id)
+}
+
+// --- IPAM IPs ---
+
+func (r *Repository) CreateIPAMIP(region string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["region"] = region
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["address"]; !ok {
+		// IPAM address must be CIDR notation — provider uses expandIPNet() to parse it.
+		data["address"] = fakePrivateIP() + "/32"
+	}
+	if _, ok := data["is_ipv6"]; !ok {
+		data["is_ipv6"] = false
+	}
+	if _, ok := data["source"]; !ok {
+		data["source"] = map[string]any{}
+	}
+	if _, ok := data["resource"]; !ok {
+		data["resource"] = map[string]any{}
+	}
+	return r.createSimple("ipam_ips", "region", region, data)
+}
+
+func (r *Repository) GetIPAMIP(id string) (map[string]any, error) {
+	return r.getJSONByID("ipam_ips", "id", id)
+}
+
+func (r *Repository) ListIPAMIPs(region string) ([]map[string]any, error) {
+	return r.listJSON("ipam_ips", "region", region)
+}
+
+func (r *Repository) UpdateIPAMIP(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("ipam_ips", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("ipam_ips", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteIPAMIP(id string) error {
+	return r.deleteBy("ipam_ips", "id = ?", id)
+}
+
+// --- RDB Read Replicas ---
+
+func (r *Repository) CreateRDBReadReplica(region, instanceID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["region"] = region
+	data["instance_id"] = instanceID
+	data["status"] = "ready"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["endpoints"]; !ok {
+		data["endpoints"] = []any{}
+	}
+	return r.createSimple("rdb_read_replicas", "region", region, data, colVal{name: "instance_id", val: instanceID})
+}
+
+func (r *Repository) GetRDBReadReplica(id string) (map[string]any, error) {
+	return r.getJSONByID("rdb_read_replicas", "id", id)
+}
+
+func (r *Repository) ListRDBReadReplicas(instanceID string) ([]map[string]any, error) {
+	return r.listJSON("rdb_read_replicas", "instance_id", instanceID)
+}
+
+func (r *Repository) DeleteRDBReadReplica(id string) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_read_replicas", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.deleteBy("rdb_read_replicas", "id = ?", id); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
+func (r *Repository) CreateRDBReadReplicaEndpoint(id string, data map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_read_replicas", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	eps, _ := next["endpoints"].([]any)
+	ep := cloneMap(data)
+	ep["id"] = newID()
+	eps = append(eps, ep)
+	next["endpoints"] = eps
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("rdb_read_replicas", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) PromoteRDBReadReplica(id string) (map[string]any, error) {
+	return r.getJSONByID("rdb_read_replicas", "id", id)
+}
+
+func (r *Repository) ResetRDBReadReplica(id string) (map[string]any, error) {
+	return r.getJSONByID("rdb_read_replicas", "id", id)
+}
+
+// --- RDB Snapshots ---
+
+func (r *Repository) CreateRDBSnapshot(region, instanceID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["region"] = region
+	data["instance_id"] = instanceID
+	data["status"] = "ready"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["size"]; !ok {
+		data["size"] = float64(10000000000)
+	}
+	return r.createSimple("rdb_snapshots", "region", region, data, colVal{name: "instance_id", val: instanceID})
+}
+
+func (r *Repository) GetRDBSnapshot(id string) (map[string]any, error) {
+	return r.getJSONByID("rdb_snapshots", "id", id)
+}
+
+func (r *Repository) ListRDBSnapshots(region string) ([]map[string]any, error) {
+	return r.listJSON("rdb_snapshots", "region", region)
+}
+
+func (r *Repository) UpdateRDBSnapshot(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_snapshots", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("rdb_snapshots", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteRDBSnapshot(id string) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_snapshots", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.deleteBy("rdb_snapshots", "id = ?", id); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
+func (r *Repository) CreateRDBInstanceFromSnapshot(region, snapshotID string, data map[string]any) (map[string]any, error) {
+	snap, err := r.getJSONByID("rdb_snapshots", "id", snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	base := cloneMap(snap)
+	for k, v := range data {
+		if k == "id" {
+			continue
+		}
+		base[k] = v
+	}
+	delete(base, "instance_id")
+	return r.CreateRDBInstance(region, base)
+}
+
+// --- RDB Backups ---
+
+func (r *Repository) CreateRDBBackup(region, instanceID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["region"] = region
+	data["instance_id"] = instanceID
+	data["status"] = "ready"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["size"]; !ok {
+		data["size"] = float64(10000000000)
+	}
+	return r.createSimple("rdb_backups", "region", region, data, colVal{name: "instance_id", val: instanceID})
+}
+
+func (r *Repository) GetRDBBackup(id string) (map[string]any, error) {
+	return r.getJSONByID("rdb_backups", "id", id)
+}
+
+func (r *Repository) ListRDBBackups(region, instanceID string) ([]map[string]any, error) {
+	if instanceID != "" {
+		return r.listJSON("rdb_backups", "instance_id", instanceID)
+	}
+	return r.listJSON("rdb_backups", "region", region)
+}
+
+func (r *Repository) UpdateRDBBackup(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_backups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("rdb_backups", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteRDBBackup(id string) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_backups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.deleteBy("rdb_backups", "id = ?", id); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
+func (r *Repository) ExportRDBBackup(id string) (map[string]any, error) {
+	current, err := r.getJSONByID("rdb_backups", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	current["download_url"] = "https://mock-backup-download.scw.cloud/" + id
+	current["download_url_expires_at"] = nowRFC3339()
+	return current, nil
+}
+
+func (r *Repository) RestoreRDBBackup(instanceID, backupID string, data map[string]any) (map[string]any, error) {
+	// Validate both the referenced backup and target instance exist.
+	// The Scaleway RDB restore-backup API returns the backup object on success.
+	backup, err := r.getJSONByID("rdb_backups", "id", backupID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.getJSONByID("rdb_instances", "id", instanceID); err != nil {
+		return nil, err
+	}
+	return backup, nil
+}
+
+func (r *Repository) CreateRDBEndpoint(instanceID string, data map[string]any) (map[string]any, error) {
+	instance, err := r.getJSONByID("rdb_instances", "id", instanceID)
+	if err != nil {
+		return nil, err
+	}
+	ep := cloneMap(data)
+	ep["id"] = newID()
+	eps, _ := instance["endpoints"].([]any)
+	eps = append(eps, ep)
+	instance["endpoints"] = eps
+	instance["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("rdb_instances", "id", instanceID, instance); err != nil {
+		return nil, err
+	}
+	return ep, nil
+}
+
+func (r *Repository) DeleteRDBEndpoint(endpointID string) error {
+	instances, err := r.listJSON("rdb_instances", "", "")
+	if err != nil {
+		return err
+	}
+	for _, inst := range instances {
+		eps, _ := inst["endpoints"].([]any)
+		newEps := make([]any, 0, len(eps))
+		found := false
+		for _, ep := range eps {
+			epMap, ok := ep.(map[string]any)
+			if !ok {
+				newEps = append(newEps, ep)
+				continue
+			}
+			if id, _ := epMap["id"].(string); id == endpointID {
+				found = true
+				continue
+			}
+			newEps = append(newEps, ep)
+		}
+		if found {
+			inst["endpoints"] = newEps
+			inst["updated_at"] = nowRFC3339()
+			if id, ok := inst["id"].(string); ok {
+				if err := r.updateJSONByID("rdb_instances", "id", id, inst); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	return models.ErrNotFound
+}
+
+// --- Redis ACLs, Endpoints, Settings ---
+
+func (r *Repository) SetRedisACLRules(clusterID string, rules []any) (map[string]any, error) {
+	current, err := r.getJSONByID("redis_clusters", "id", clusterID)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	next["acl_rules"] = rules
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("redis_clusters", "id", clusterID, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) SetRedisEndpoints(clusterID string, endpoints []any) (map[string]any, error) {
+	current, err := r.getJSONByID("redis_clusters", "id", clusterID)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	next["endpoints"] = endpoints
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("redis_clusters", "id", clusterID, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) SetRedisClusterSettings(clusterID string, settings []any) (map[string]any, error) {
+	current, err := r.getJSONByID("redis_clusters", "id", clusterID)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	next["settings"] = settings
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("redis_clusters", "id", clusterID, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteRedisEndpoint(zone, endpointID string) (map[string]any, error) {
+	clusters, err := r.listJSON("redis_clusters", "zone", zone)
+	if err != nil {
+		return nil, err
+	}
+	for _, cluster := range clusters {
+		eps, _ := cluster["endpoints"].([]any)
+		newEps := make([]any, 0, len(eps))
+		found := false
+		for _, ep := range eps {
+			epMap, ok := ep.(map[string]any)
+			if !ok {
+				newEps = append(newEps, ep)
+				continue
+			}
+			if id, _ := epMap["id"].(string); id == endpointID {
+				found = true
+				continue
+			}
+			newEps = append(newEps, ep)
+		}
+		if found {
+			cluster["endpoints"] = newEps
+			cluster["updated_at"] = nowRFC3339()
+			if id, ok := cluster["id"].(string); ok {
+				if err := r.updateJSONByID("redis_clusters", "id", id, cluster); err != nil {
+					return nil, err
+				}
+			}
+			return cluster, nil
+		}
+	}
+	return nil, models.ErrNotFound
+}
+
+// --- LB ACLs ---
+
+func (r *Repository) CreateLBACL(frontendID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	data["frontend_id"] = frontendID
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	return r.createSimple("lb_acls", "frontend_id", frontendID, data)
+}
+
+func (r *Repository) GetLBACL(id string) (map[string]any, error) {
+	return r.getJSONByID("lb_acls", "id", id)
+}
+
+func (r *Repository) ListLBACLsByFrontend(frontendID string) ([]map[string]any, error) {
+	return r.listJSON("lb_acls", "frontend_id", frontendID)
+}
+
+func (r *Repository) UpdateLBACL(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_acls", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("lb_acls", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteLBACL(id string) error {
+	return r.deleteBy("lb_acls", "id = ?", id)
+}
+
+// --- LB Routes ---
+
+func (r *Repository) CreateLBRoute(lbID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	data["lb_id"] = lbID
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	return r.createSimple("lb_routes", "lb_id", lbID, data)
+}
+
+func (r *Repository) GetLBRoute(id string) (map[string]any, error) {
+	return r.getJSONByID("lb_routes", "id", id)
+}
+
+func (r *Repository) ListLBRoutes(lbID, frontendID string) ([]map[string]any, error) {
+	var all []map[string]any
+	var err error
+	if lbID != "" {
+		all, err = r.listJSON("lb_routes", "lb_id", lbID)
+	} else {
+		all, err = r.listJSON("lb_routes", "", "")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if frontendID == "" {
+		return all, nil
+	}
+	filtered := make([]map[string]any, 0, len(all))
+	for _, route := range all {
+		if fid, _ := route["frontend_id"].(string); fid == frontendID {
+			filtered = append(filtered, route)
+		}
+	}
+	return filtered, nil
+}
+
+func (r *Repository) UpdateLBRoute(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_routes", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("lb_routes", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteLBRoute(id string) error {
+	return r.deleteBy("lb_routes", "id = ?", id)
+}
+
+// --- LB Certificates ---
+
+func (r *Repository) CreateLBCertificate(lbID string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	data["lb_id"] = lbID
+	now := nowRFC3339()
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["status"]; !ok {
+		data["status"] = "ready"
+	}
+	return r.createSimple("lb_certificates", "lb_id", lbID, data)
+}
+
+func (r *Repository) GetLBCertificate(id string) (map[string]any, error) {
+	return r.getJSONByID("lb_certificates", "id", id)
+}
+
+func (r *Repository) ListLBCertificatesByLB(lbID string) ([]map[string]any, error) {
+	return r.listJSON("lb_certificates", "lb_id", lbID)
+}
+
+func (r *Repository) UpdateLBCertificate(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("lb_certificates", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("lb_certificates", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteLBCertificate(id string) error {
+	return r.deleteBy("lb_certificates", "id = ?", id)
 }
 
 // --- Container Registry ---
@@ -2010,6 +3475,50 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	iamUsers, err := r.listJSON("iam_users", "", "")
+	if err != nil {
+		return nil, err
+	}
+	iamGroups, err := r.ListIAMGroups()
+	if err != nil {
+		return nil, err
+	}
+	blockVolumes, err := r.listJSON("block_volumes", "", "")
+	if err != nil {
+		return nil, err
+	}
+	blockSnapshots, err := r.listJSON("block_snapshots", "", "")
+	if err != nil {
+		return nil, err
+	}
+	ipamIPs, err := r.listJSON("ipam_ips", "", "")
+	if err != nil {
+		return nil, err
+	}
+	rdbReadReplicas, err := r.listJSON("rdb_read_replicas", "", "")
+	if err != nil {
+		return nil, err
+	}
+	rdbSnapshots, err := r.listJSON("rdb_snapshots", "", "")
+	if err != nil {
+		return nil, err
+	}
+	rdbBackups, err := r.listJSON("rdb_backups", "", "")
+	if err != nil {
+		return nil, err
+	}
+	lbACLs, err := r.listJSON("lb_acls", "", "")
+	if err != nil {
+		return nil, err
+	}
+	lbRoutes, err := r.listJSON("lb_routes", "", "")
+	if err != nil {
+		return nil, err
+	}
+	lbCertificates, err := r.listJSON("lb_certificates", "", "")
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"instance": map[string]any{
@@ -2028,16 +3537,22 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"frontends":        frontends,
 			"backends":         backends,
 			"private_networks": lbPNs,
+			"acls":             lbACLs,
+			"routes":           lbRoutes,
+			"certificates":     lbCertificates,
 		},
 		"k8s": map[string]any{
 			"clusters": clusters,
 			"pools":    pools,
 		},
 		"rdb": map[string]any{
-			"instances":  rdbInstances,
-			"databases":  rdbDatabases,
-			"users":      rdbUsers,
-			"privileges": rdbPrivileges,
+			"instances":     rdbInstances,
+			"databases":     rdbDatabases,
+			"users":         rdbUsers,
+			"privileges":    rdbPrivileges,
+			"read_replicas": rdbReadReplicas,
+			"snapshots":     rdbSnapshots,
+			"backups":       rdbBackups,
 		},
 		"redis": map[string]any{
 			"clusters": redisClusters,
@@ -2050,9 +3565,18 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"api_keys":     iamAPIKeys,
 			"policies":     iamPolicies,
 			"ssh_keys":     iamSSHKeys,
+			"users":        iamUsers,
+			"groups":       iamGroups,
 		},
 		"domain": map[string]any{
 			"records": domainRecords,
+		},
+		"block": map[string]any{
+			"volumes":   blockVolumes,
+			"snapshots": blockSnapshots,
+		},
+		"ipam": map[string]any{
+			"ips": ipamIPs,
 		},
 	}, nil
 }
@@ -2116,12 +3640,27 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		lbACLs, err := r.listJSON("lb_acls", "", "")
+		if err != nil {
+			return nil, err
+		}
+		lbRoutes, err := r.listJSON("lb_routes", "", "")
+		if err != nil {
+			return nil, err
+		}
+		lbCertificates, err := r.listJSON("lb_certificates", "", "")
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"ips":              lbIPs,
 			"lbs":              lbs,
 			"frontends":        frontends,
 			"backends":         backends,
 			"private_networks": lbPNs,
+			"acls":             lbACLs,
+			"routes":           lbRoutes,
+			"certificates":     lbCertificates,
 		}, nil
 	case "k8s":
 		clusters, err := r.listJSON("k8s_clusters", "", "")
@@ -2153,11 +3692,26 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		readReplicas, err := r.listJSON("rdb_read_replicas", "", "")
+		if err != nil {
+			return nil, err
+		}
+		snapshots, err := r.listJSON("rdb_snapshots", "", "")
+		if err != nil {
+			return nil, err
+		}
+		backups, err := r.listJSON("rdb_backups", "", "")
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
-			"instances":  instances,
-			"databases":  databases,
-			"users":      users,
-			"privileges": privileges,
+			"instances":     instances,
+			"databases":     databases,
+			"users":         users,
+			"privileges":    privileges,
+			"read_replicas": readReplicas,
+			"snapshots":     snapshots,
+			"backups":       backups,
 		}, nil
 	case "redis":
 		clusters, err := r.listJSON("redis_clusters", "", "")
@@ -2192,11 +3746,42 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		iamUsers, err := r.listJSON("iam_users", "", "")
+		if err != nil {
+			return nil, err
+		}
+		iamGroups, err := r.ListIAMGroups()
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"applications": applications,
 			"api_keys":     apiKeys,
 			"policies":     policies,
 			"ssh_keys":     sshKeys,
+			"users":        iamUsers,
+			"groups":       iamGroups,
+		}, nil
+	case "block":
+		blockVolumes, err := r.listJSON("block_volumes", "", "")
+		if err != nil {
+			return nil, err
+		}
+		blockSnapshots, err := r.listJSON("block_snapshots", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"volumes":   blockVolumes,
+			"snapshots": blockSnapshots,
+		}, nil
+	case "ipam":
+		ipamIPs, err := r.listJSON("ipam_ips", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"ips": ipamIPs,
 		}, nil
 	case "domain":
 		records, err := r.listJSON("domain_records", "", "")
