@@ -75,6 +75,336 @@ resource "scaleway_instance_server" "srv" {
 	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
 }
 
+func TestProviderRegistry(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_registry_namespace" "ns" {
+  name       = "mockway-registry"
+  is_public  = false
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
+func TestProviderRedis(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_redis_cluster" "redis" {
+  name         = "mockway-redis"
+  version      = "7.2.4"
+  node_type    = "RED1-MICRO"
+  user_name    = "default"
+  password     = "R3d1sP@ssw0rd!"
+  cluster_size = 1
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
+func TestProviderRDB(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_rdb_instance" "db" {
+  name           = "mockway-db"
+  node_type      = "DB-DEV-S"
+  engine         = "PostgreSQL-15"
+  is_ha_cluster  = false
+  disable_backup = true
+}
+
+resource "scaleway_rdb_database" "appdb" {
+  instance_id = scaleway_rdb_instance.db.id
+  name        = "appdb"
+}
+
+resource "scaleway_rdb_user" "appuser" {
+  instance_id = scaleway_rdb_instance.db.id
+  name        = "appuser"
+  password    = "S3cr3tP@ssw0rd!"
+  is_admin    = false
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
+func TestProviderK8s(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_k8s_cluster" "cluster" {
+  name                        = "mockway-cluster"
+  version                     = "1.31.2"
+  cni                         = "cilium"
+  delete_additional_resources = false
+}
+
+resource "scaleway_k8s_pool" "pool" {
+  cluster_id = scaleway_k8s_cluster.cluster.id
+  name       = "mockway-pool"
+  node_type  = "DEV1-M"
+  size       = 1
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
+func TestProviderLB(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_lb" "lb" {
+  name = "mockway-lb"
+  type = "LB-S"
+}
+
+resource "scaleway_lb_backend" "backend" {
+  lb_id            = scaleway_lb.lb.id
+  name             = "mockway-backend"
+  forward_protocol = "http"
+  forward_port     = 80
+}
+
+resource "scaleway_lb_frontend" "frontend" {
+  lb_id        = scaleway_lb.lb.id
+  backend_id   = scaleway_lb_backend.backend.id
+  name         = "mockway-frontend"
+  inbound_port = 80
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
+func TestProviderIAM(t *testing.T) {
+	bin := chooseIaCBinary()
+	if bin == "" {
+		t.Skip("skipping provider E2E: neither tofu nor terraform found in PATH")
+	}
+
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	tmp := t.TempDir()
+	tf := `
+terraform {
+  required_providers {
+    scaleway = {
+      source  = "scaleway/scaleway"
+      version = "~> 2.50"
+    }
+  }
+}
+
+provider "scaleway" {}
+
+resource "scaleway_iam_application" "app" {
+  name = "mockway-app"
+}
+
+resource "scaleway_iam_api_key" "key" {
+  application_id = scaleway_iam_application.app.id
+  description    = "mockway api key"
+}
+
+resource "scaleway_iam_policy" "policy" {
+  name           = "mockway-policy"
+  application_id = scaleway_iam_application.app.id
+  rule {
+    organization_id      = "00000000-0000-0000-0000-000000000000"
+    permission_set_names = ["AllProductsFullAccess"]
+  }
+}
+
+resource "scaleway_iam_ssh_key" "ssh" {
+  name       = "mockway-ssh"
+  public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GkZL test@mockway"
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "main.tf"), []byte(strings.TrimSpace(tf)+"\n"), 0o600))
+
+	env := append(os.Environ(),
+		"SCW_API_URL="+ts.URL,
+		"SCW_ACCESS_KEY=SCWXXXXXXXXXXXXXXXXX",
+		"SCW_SECRET_KEY=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000",
+		"SCW_DEFAULT_ZONE=fr-par-1",
+		"SCW_DEFAULT_REGION=fr-par",
+		"TF_IN_AUTOMATION=1",
+	)
+
+	runIaC(t, tmp, env, bin, "init", "-input=false", "-no-color", "-reconfigure")
+	runIaC(t, tmp, env, bin, "apply", "-auto-approve", "-input=false", "-no-color")
+	runIaCPlanNoOp(t, tmp, env, bin)
+	runIaC(t, tmp, env, bin, "destroy", "-auto-approve", "-input=false", "-no-color")
+}
+
 func chooseIaCBinary() string {
 	if _, err := exec.LookPath("tofu"); err == nil {
 		return "tofu"

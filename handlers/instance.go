@@ -230,12 +230,37 @@ func (app *Application) GetServer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"server": out})
 }
 
+func (app *Application) UpdateServer(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateServer(chi.URLParam(r, "server_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": out})
+}
+
 func (app *Application) ListServerUserData(w http.ResponseWriter, r *http.Request) {
 	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user_data": []string{}})
+}
+
+// GetServerUserDataKey handles GET /servers/{server_id}/user_data/{key}.
+// We discard user_data on write so return an empty value stub.
+func (app *Application) GetServerUserDataKey(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
 }
 
 func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
@@ -250,8 +275,28 @@ func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action, _ := body["action"].(string)
-	if action == "terminate" {
+	switch action {
+	case "terminate":
 		if err := app.repo.DeleteServer(serverID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	case "poweron":
+		if err := app.repo.SetServerState(serverID, "running"); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	case "poweroff", "stop_in_place":
+		state := "stopped"
+		if action == "stop_in_place" {
+			state = "stopped_in_place"
+		}
+		if err := app.repo.SetServerState(serverID, state); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	case "reboot":
+		if err := app.repo.SetServerState(serverID, "running"); err != nil {
 			writeDomainError(w, err)
 			return
 		}
@@ -328,6 +373,20 @@ func (app *Application) GetIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ip": out})
 }
 
+func (app *Application) UpdateInstanceIP(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateIP(chi.URLParam(r, "ip_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ip": out})
+}
+
 func (app *Application) ListIPs(w http.ResponseWriter, r *http.Request) {
 	items, err := app.repo.ListIPs(chi.URLParam(r, "zone"))
 	if err != nil {
@@ -365,7 +424,33 @@ func (app *Application) GetSecurityGroup(w http.ResponseWriter, r *http.Request)
 		writeDomainError(w, err)
 		return
 	}
+	splitSecurityGroupRules(out)
 	writeJSON(w, http.StatusOK, map[string]any{"security_group": out})
+}
+
+// splitSecurityGroupRules transforms the stored flat "rules" array (each entry
+// has a "direction" field) into separate "inbound_rule" and "outbound_rule"
+// arrays, which is the shape the Scaleway Terraform provider expects when it
+// refreshes a scaleway_instance_security_group resource via GET.
+func splitSecurityGroupRules(sg map[string]any) {
+	rules, _ := sg["rules"].([]any)
+	inbound := make([]any, 0)
+	outbound := make([]any, 0)
+	for _, r := range rules {
+		rule, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch rule["direction"] {
+		case "inbound":
+			inbound = append(inbound, rule)
+		case "outbound":
+			outbound = append(outbound, rule)
+		}
+	}
+	sg["inbound_rule"] = inbound
+	sg["outbound_rule"] = outbound
+	delete(sg, "rules")
 }
 
 func (app *Application) ListSecurityGroups(w http.ResponseWriter, r *http.Request) {

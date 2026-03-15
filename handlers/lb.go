@@ -12,7 +12,7 @@ func (app *Application) CreateLBIP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
-	out, err := app.repo.CreateLBIP(chi.URLParam(r, "zone"), body)
+	out, err := app.repo.CreateLBIP(lbScope(r), body)
 	if err != nil {
 		writeCreateError(w, err)
 		return
@@ -30,12 +30,26 @@ func (app *Application) GetLBIP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListLBIPs(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListLBIPs(chi.URLParam(r, "zone"))
+	items, err := app.repo.ListLBIPs(lbScope(r))
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	writeList(w, "ips", items)
+}
+
+func (app *Application) UpdateLBIP(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateLBIP(chi.URLParam(r, "ip_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (app *Application) DeleteLBIP(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +66,7 @@ func (app *Application) CreateLB(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
-	out, err := app.repo.CreateLB(chi.URLParam(r, "zone"), body)
+	out, err := app.repo.CreateLB(lbScope(r), body)
 	if err != nil {
 		writeCreateError(w, err)
 		return
@@ -70,7 +84,7 @@ func (app *Application) GetLB(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListLBs(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListLBs(chi.URLParam(r, "zone"))
+	items, err := app.repo.ListLBs(lbScope(r))
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -142,8 +156,13 @@ func (app *Application) ListFrontends(w http.ResponseWriter, r *http.Request) {
 	writeList(w, "frontends", items)
 }
 
-func (app *Application) ListFrontendACLs(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"acls": []any{}, "total_count": 0})
+func (app *Application) ListFrontendACLs(w http.ResponseWriter, r *http.Request) {
+	items, err := app.repo.ListLBACLsByFrontend(chi.URLParam(r, "frontend_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeList(w, "acls", items)
 }
 
 func (app *Application) UpdateFrontend(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +260,10 @@ func (app *Application) AttachLBPrivateNetwork(w http.ResponseWriter, r *http.Re
 	}
 	lbID := chi.URLParam(r, "lb_id")
 	pnID, _ := body["private_network_id"].(string)
+	// Path-style routes (/private-networks/{pn_id}/attach) carry pn_id in the URL.
+	if pnID == "" {
+		pnID = chi.URLParam(r, "pn_id")
+	}
 	out, err := app.repo.AttachLBPrivateNetwork(lbID, pnID)
 	if err != nil {
 		writeCreateError(w, err)
@@ -273,6 +296,26 @@ func (app *Application) ListLBPrivateNetworks(w http.ResponseWriter, r *http.Req
 
 func (app *Application) DeleteLBPrivateNetwork(w http.ResponseWriter, r *http.Request) {
 	if err := app.repo.DeleteLBPrivateNetwork(chi.URLParam(r, "lb_id"), chi.URLParam(r, "pn_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
+// DetachLBPrivateNetwork handles POST /lbs/{lb_id}/detach-private-network.
+// The spec uses a POST with private_network_id in the body instead of a DELETE with ID in the path.
+func (app *Application) DetachLBPrivateNetwork(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	pnID, _ := body["private_network_id"].(string)
+	// Path-style routes (/private-networks/{pn_id}/detach) carry pn_id in the URL.
+	if pnID == "" {
+		pnID = chi.URLParam(r, "pn_id")
+	}
+	if err := app.repo.DeleteLBPrivateNetwork(chi.URLParam(r, "lb_id"), pnID); err != nil {
 		writeDomainError(w, err)
 		return
 	}

@@ -1,4 +1,4 @@
-# Run this example against a local mockway instance to see the failure:
+# Run this example against a local mockway instance:
 #
 #   go install github.com/redscaresu/mockway/cmd/mockway@latest
 #   mockway --port 8080 &
@@ -12,17 +12,13 @@
 #   export SCW_DEFAULT_ZONE=fr-par-1
 #
 #   terraform init && terraform apply -auto-approve
-#   # Expected: ERROR — resource not found
-#
-# Note: if you have a local Scaleway CLI profile (~/.config/scw/config.yaml) you
-# will see a "Multiple variable sources detected" warning. This is cosmetic — the
-# provider is using the environment variables above, not your real credentials.
+#   terraform destroy -auto-approve
 
 terraform {
   required_providers {
     scaleway = {
       source  = "scaleway/scaleway"
-      version = "~> 2.40"
+      version = "~> 2.50"
     }
   }
 }

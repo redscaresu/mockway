@@ -4,7 +4,7 @@ Local mock of the Scaleway API for offline OpenTofu and Terraform testing.
 
 Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes Scaleway-like API routes on one port. State is kept in-memory by default — each run starts clean, which is ideal for test cycles. Use `--db ./mockway.db` if you need state to survive restarts.
 
-> **This project is in early development.** Only a subset of Scaleway services have been tested against the real Terraform provider. Other services have handler code but will likely need further work to pass a full `terraform apply` + `terraform destroy` cycle. See [Tested Services](#tested-services) and [Untested Services](#untested-services) below.
+> **This project is in early development.** The services in the compatibility matrix below have been verified against the real Scaleway Terraform provider with a full `apply → plan (no-op) → destroy` cycle. Other services may have handler code but have not been tested.
 
 ## Install
 
@@ -26,6 +26,22 @@ mockway --port 8080 --db ./mockway.db
 
 Default is `:memory:` — state resets on exit.
 
+### Echo mode
+
+```bash
+mockway --echo --port 8080
+```
+
+Echo mode replaces the real mock with a catch-all handler that returns `{"ok":true}` for every request and logs the method, path, and headers to stdout. Use it to discover which API endpoints a Terraform config calls before writing handlers:
+
+```bash
+mockway --echo --port 8080 &
+export SCW_API_URL=http://localhost:8080
+terraform apply   # runs against echo; watch stdout for the paths you need
+```
+
+Then grep the log output for the paths, implement them in mockway, and switch back to normal mode.
+
 ## Usage with OpenTofu / Terraform
 
 Point the Scaleway provider at Mockway:
@@ -39,33 +55,50 @@ export SCW_DEFAULT_PROJECT_ID=00000000-0000-0000-0000-000000000000
 
 Then run `tofu plan && tofu apply` or `terraform plan && terraform apply` as normal.
 
-## Tested Services
+## Provider Compatibility Matrix
 
-The following services have been tested through a full `terraform apply` + `terraform destroy` cycle against the real Scaleway Terraform provider:
+Each row reflects a verified `apply → plan (no-op) → destroy` cycle against the real `scaleway/scaleway` Terraform provider (≥ 2.50). "No-op plan" means the second `plan -detailed-exitcode` exits 0 — no drift.
 
-- **Instance** (`/instance/v1/zones/{zone}/`) — servers, IPs, security groups (with rules), private NICs, volumes, server actions, user_data stubs, products catalog
-- **IAM** (`/iam/v1alpha1/`) — applications, API keys, policies, SSH keys
-- **Marketplace** (`/marketplace/v2/`) — image label → zone-specific UUID resolution
+| Service | API prefix | Terraform resources | Status | Example |
+|---------|-----------|---------------------|--------|---------|
+| Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance) |
+| IAM | `/iam/v1alpha1/` | `scaleway_iam_application`, `scaleway_iam_api_key`, `scaleway_iam_policy` (with rules), `scaleway_iam_ssh_key` | ✅ verified | [`examples/working/iam_full`](examples/working/iam_full) |
+| Load Balancer | `/lb/v1/zones/{zone}/` | `scaleway_lb`, `scaleway_lb_backend`, `scaleway_lb_frontend` | ✅ verified | [`examples/working/load_balancer`](examples/working/load_balancer) |
+| Kubernetes | `/k8s/v1/regions/{region}/` | `scaleway_k8s_cluster`, `scaleway_k8s_pool` | ✅ verified | [`examples/working/kubernetes_cluster`](examples/working/kubernetes_cluster) |
+| RDB | `/rdb/v1/regions/{region}/` | `scaleway_rdb_instance`, `scaleway_rdb_database`, `scaleway_rdb_user` | ✅ verified | [`examples/working/rdb_instance`](examples/working/rdb_instance) |
+| Redis | `/redis/v1/zones/{zone}/` | `scaleway_redis_cluster` | ✅ verified | [`examples/working/redis_cluster`](examples/working/redis_cluster) |
+| Registry | `/registry/v1/regions/{region}/` | `scaleway_registry_namespace` | ✅ verified | [`examples/working/registry_namespace`](examples/working/registry_namespace) |
+| Marketplace | `/marketplace/v2/` | (image label resolution — used by Instance) | ✅ verified | — |
+| VPC | `/vpc/v1/` | `scaleway_vpc`, `scaleway_vpc_private_network` | ⚠️ handler only | [`examples/working/vpc_and_private_network`](examples/working/vpc_and_private_network) |
+| Account (legacy) | `/account/v2alpha1/` | `scaleway_account_ssh_key` | ✅ verified | — |
+| IPAM | `/ipam/v1/` | list stub | ⚠️ stub | — |
+| Domain | `/domain/v2beta1/` | list + patch stubs | ⚠️ stub | — |
+| Block | `/block/v1alpha1/` | delegates to Instance volumes | ⚠️ partial | — |
 
-The specific Terraform resources verified end-to-end:
+## What mockway catches
 
-- `scaleway_account_ssh_key`
-- `scaleway_iam_application`
-- `scaleway_iam_api_key`
-- `scaleway_iam_policy`
-- `scaleway_instance_ip`
-- `scaleway_instance_security_group` (with inbound rules)
-- `scaleway_instance_server` (with image label, security group, reserved IP, cloud-init user_data)
+`terraform validate` checks syntax. `terraform plan` checks the dependency graph. Neither calls the API, so neither can catch mistakes that only surface when the provider actually makes HTTP requests. mockway fills that gap by enforcing the same FK constraints as the real Scaleway API during a local apply.
 
-## Untested Services
+Three categories of mistake are consistently missed by standard tooling:
 
-The following services have CRUD handler code and pass integration tests at the HTTP level, but have **not** been tested against the real Terraform provider. Based on the experience with Instance (which required 10 fixes for response shapes, FK cascades, and provider quirks), these will almost certainly need further development to work with `terraform apply`:
+**1. Wrong reference** — a reference that resolves to the wrong value at apply time. `validate` and `plan` see a valid string; mockway returns 404 when the ID doesn't match any stored resource.
 
-- **VPC** (`/vpc/v1/regions/{region}/`) — VPCs, private networks
-- **Load Balancer** (`/lb/v1/zones/{zone}/`) — LBs, frontends, backends, private network attachments
-- **Kubernetes** (`/k8s/v1/regions/{region}/`) — clusters, pools
-- **RDB** (`/rdb/v1/regions/{region}/`) — managed database instances, databases, users
-- **Account** (`/account/v2alpha1/`) — SSH keys (legacy alias → IAM)
+Common forms:
+- `.name` used where `.id` is required — both are strings, both pass type checks, the name is just not a UUID (`scaleway_rdb_instance.db.name` instead of `.id`)
+- Wrong resource referenced — autocomplete picks the parent when the child was intended (`scaleway_lb.lb.id` instead of `scaleway_lb_backend.backend.id` — both are UUIDs)
+- Missing resource entirely — a child resource is defined but its parent was never added to the config
+
+Examples: [`misconfigured/app_stack_db_ref`](examples/misconfigured/app_stack_db_ref), [`misconfigured/lb_missing_backend`](examples/misconfigured/lb_missing_backend), [`misconfigured/rdb_child_before_parent`](examples/misconfigured/rdb_child_before_parent)
+
+**2. Wrong destroy order** — a parent resource is deleted while children still hold FK references to it. A full `terraform destroy` is safe because Terraform reads the dependency graph and destroys in the right order. The failure only appears with `-target` destroys, manual console deletions, or multi-workspace teardowns where Terraform can't see the full graph.
+
+Example: [`misconfigured/vpc_deleted_before_private_network`](examples/misconfigured/vpc_deleted_before_private_network)
+
+**3. Cross-state orphan** — one Terraform state file owns a shared resource (e.g. an IAM application); another state file creates children that reference it by ID (e.g. API keys and policies passed in as variables). When the first workspace is destroyed, its `terraform plan` shows a clean single-resource deletion — it has no visibility into the other state file. mockway holds state for both workspaces on the same port and returns 409 when the parent is deleted while children still exist.
+
+Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state_orphan)
+
+---
 
 ## Features
 
@@ -84,7 +117,7 @@ The following services have CRUD handler code and pass integration tests at the 
 - **No field validation.** Mockway accepts whatever JSON you send and stores it. It does not validate `commercial_type`, `node_type`, required fields, or value constraints beyond foreign key references.
 - **No pagination.** All list endpoints return all results in a single page. `page`/`per_page` query parameters are ignored.
 - **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses) which is a different problem from the JSON REST API.
-- **IAM rules are a stub.** `GET /iam/v1alpha1/rules` always returns an empty list regardless of policy.
+- **IAM rules are policy-scoped.** `GET /iam/v1alpha1/rules?policy_id=<id>` returns rules stored during policy create. Rules sent inline in `POST /iam/v1alpha1/policies` are persisted. `GET /iam/v1alpha1/rules` without a `policy_id` always returns an empty list.
 - **User data is discarded.** `PATCH /servers/{id}/user_data/{key}` accepts the body but does not store it. `GET /servers/{id}/user_data` always returns an empty list.
 - **Unimplemented routes return 501.** Any route not explicitly handled returns `501 Not Implemented` with a log line — useful for discovering which endpoints your Terraform config needs.
 
@@ -160,6 +193,15 @@ See [scripts/test-with-mock.sh](https://github.com/redscaresu/hardened-scaleway-
 ```bash
 go test ./...
 ```
+
+To manually verify the working examples end-to-end (apply → no-op plan → destroy):
+
+```bash
+./scripts/test-examples.sh                  # all examples/working/* dirs
+./scripts/test-examples.sh load_balancer    # specific dir by name
+```
+
+The script starts mockway on a random free port, resets state between runs, and reports pass/fail per directory. This is a manual debugging aid; the authoritative CI test is `go test -tags provider_e2e ./e2e`.
 
 Key packages:
 

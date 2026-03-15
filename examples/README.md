@@ -101,18 +101,45 @@ Configs that apply and destroy correctly. These show the right way to express Sc
 
 | Example | What it demonstrates |
 |---|---|
-| `working/basic_instance` | Server with a security group; `security_group_id` uses a resource reference, not a hard-coded UUID |
-| `working/vpc_and_private_network` | Full dependency chain: VPC → private network → server → private NIC; all FK parents created before their children |
+| `working/basic_instance` | Server with a security group; `security_group_id` uses a resource reference |
+| `working/vpc_and_private_network` | VPC → private network → server → private NIC dependency chain |
+| `working/iam_full` | IAM application, API key, policy (with rules), and SSH key |
+| `working/load_balancer` | LB → backend → frontend; each resource references its parent |
+| `working/kubernetes_cluster` | K8s cluster and node pool |
+| `working/rdb_instance` | RDB instance, database, and user; `disable_backup` translation |
+| `working/redis_cluster` | Redis cluster |
+| `working/registry_namespace` | Container registry namespace |
 
 ### misconfigured
 
-Configs with real mistakes that `terraform validate` and `terraform plan` do not catch. Each one only fails when `terraform apply` (or a targeted destroy) calls the API.
+Configs with real mistakes that `terraform validate` and `terraform plan` do not catch. Each fails when `terraform apply` (or a targeted destroy) calls the API.
+
+Three categories of failure are represented:
+
+**Wrong reference** — a Terraform reference that resolves to the wrong value at apply time.
 
 | Example | The mistake | What mockway returns |
 |---|---|---|
-| `misconfigured/hardcoded_security_group_id` | `security_group_id` is a literal UUID copied from another environment — it does not exist | `404 referenced resource not found` at server create |
-| `misconfigured/nic_with_missing_private_network` | `private_network_id` comes from a variable with a stale or wrong UUID — the private network was never created | `404 referenced resource not found` at NIC create, after the server has already been created |
-| `misconfigured/vpc_deleted_before_private_network` | VPC is destroyed while a private network still references it — run `terraform destroy -target scaleway_vpc.vpc` to trigger it | `409 cannot delete: dependents exist` |
+| `misconfigured/hardcoded_security_group_id` | `security_group_id` is a literal UUID that does not exist in mockway's state | `404` at server create |
+| `misconfigured/nic_with_missing_private_network` | `private_network_id` is a stale UUID — the private network was never created | `404` at NIC create, after the server already applied |
+| `misconfigured/lb_missing_backend` | `backend_id` points at `scaleway_lb.lb.id` instead of `scaleway_lb_backend.backend.id` — wrong resource, both are UUIDs | `404` at frontend create |
+| `misconfigured/k8s_pool_missing_cluster` | `cluster_id` is a literal UUID; no cluster with that ID was created | `404` at pool create |
+| `misconfigured/rdb_child_before_parent` | `instance_id` is a literal UUID; no RDB instance with that ID exists | `404` at database create |
+| `misconfigured/app_stack_db_ref` | 12-resource stack (IAM + Instance + LB + RDB); `scaleway_rdb_database` uses `.name` instead of `.id` for `instance_id` — 11 resources apply before the failure | `404` at database create |
+
+**Wrong destroy order** — a parent resource is deleted while children still hold references to it.
+
+| Example | The mistake | What mockway returns |
+|---|---|---|
+| `misconfigured/vpc_deleted_before_private_network` | Run `terraform destroy -target scaleway_vpc.vpc` while the private network still exists | `409 cannot delete: dependents exist` |
+
+**Cross-state orphan** — a resource in one Terraform state file references a resource in another; standard tooling cannot see across state files.
+
+| Example | The mistake | What mockway returns |
+|---|---|---|
+| `misconfigured/cross_state_orphan` | `platform/` owns a shared IAM application; `app/` creates an API key and policy that reference it via variable. Destroying `platform/` while `app/` is still applied fails. | `409 cannot delete: dependents exist` |
+
+The cross-state example is two steps — see `misconfigured/cross_state_orphan/platform/main.tf` for the full reproduction instructions.
 
 ---
 

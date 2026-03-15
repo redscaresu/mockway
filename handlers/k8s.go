@@ -46,6 +46,55 @@ func (app *Application) ListK8sVersions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
 }
 
+// GetNode handles GET /nodes/{node_id}. Nodes are synthesised from pools using
+// deterministic UUIDs (same algorithm as ListClusterNodes), so we reverse-lookup
+// the pool by recomputing IDs and matching.
+func (app *Application) GetNode(w http.ResponseWriter, r *http.Request) {
+	nodeID := chi.URLParam(r, "node_id")
+	region := chi.URLParam(r, "region")
+
+	pools, err := app.repo.ListAllPools()
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	for _, pool := range pools {
+		// Only consider pools in the requested region.
+		if r, _ := pool["region"].(string); r != region {
+			continue
+		}
+		poolID, _ := pool["id"].(string)
+		clusterID, _ := pool["cluster_id"].(string)
+		poolName, _ := pool["name"].(string)
+		size, _ := pool["size"].(float64)
+		if size < 1 {
+			size = 1
+		}
+		for i := 0; i < int(size); i++ {
+			candidate := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s-%d", poolID, i))).String()
+			if candidate == nodeID {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"id":           nodeID,
+					"pool_id":      poolID,
+					"cluster_id":   clusterID,
+					"region":       region,
+					"name":         fmt.Sprintf("%s-node-%d", poolName, i),
+					"status":       "ready",
+					"public_ip_v4": nil,
+					"public_ip_v6": nil,
+					"conditions":   map[string]any{},
+					"created_at":   pool["created_at"],
+					"updated_at":   pool["updated_at"],
+				})
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusNotFound, map[string]any{"message": "resource not found", "type": "not_found"})
+}
+
 func (app *Application) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 	clusterID := chi.URLParam(r, "cluster_id")
 	// Return nodes based on existing pools for this cluster.
@@ -63,13 +112,15 @@ func (app *Application) ListClusterNodes(w http.ResponseWriter, r *http.Request)
 			size = 1
 		}
 		for i := 0; i < int(size); i++ {
+			// Deterministic node ID so that GET /nodes/{node_id} round-trips.
+			nodeID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s-%d", poolID, i))).String()
 			nodes = append(nodes, map[string]any{
-				"id":         uuid.NewString(),
-				"pool_id":    poolID,
-				"cluster_id": clusterID,
-				"region":     chi.URLParam(r, "region"),
-				"name":       fmt.Sprintf("%s-node-%d", poolName, i),
-				"status":     "ready",
+				"id":           nodeID,
+				"pool_id":      poolID,
+				"cluster_id":   clusterID,
+				"region":       chi.URLParam(r, "region"),
+				"name":         fmt.Sprintf("%s-node-%d", poolName, i),
+				"status":       "ready",
 				"public_ip_v4": nil,
 				"public_ip_v6": nil,
 				"conditions":   map[string]any{},

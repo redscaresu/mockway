@@ -12,12 +12,11 @@
 #   export SCW_DEFAULT_ZONE=fr-par-1
 #
 #   terraform init && terraform apply -auto-approve
-#
-# To trigger the destroy failure — destroy the VPC first, leaving the private
-# network orphaned:
-#
-#   terraform destroy -target scaleway_vpc.vpc -auto-approve
 #   # Expected: ERROR — cannot delete: dependents exist
+#
+# Note: if you have a local Scaleway CLI profile (~/.config/scw/config.yaml) you
+# will see a "Multiple variable sources detected" warning. This is cosmetic — the
+# provider is using the environment variables above, not your real credentials.
 
 terraform {
   required_providers {

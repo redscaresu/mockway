@@ -53,9 +53,15 @@ func (app *Application) UpdateRegistryNamespace(w http.ResponseWriter, r *http.R
 }
 
 func (app *Application) DeleteRegistryNamespace(w http.ResponseWriter, r *http.Request) {
-	if err := app.repo.DeleteRegistryNamespace(chi.URLParam(r, "namespace_id")); err != nil {
+	namespaceID := chi.URLParam(r, "namespace_id")
+	out, err := app.repo.GetRegistryNamespace(namespaceID)
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeNoContent(w)
+	if err := app.repo.DeleteRegistryNamespace(namespaceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

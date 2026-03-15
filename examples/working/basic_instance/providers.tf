@@ -13,6 +13,10 @@
 #
 #   terraform init && terraform apply -auto-approve
 #   terraform destroy -auto-approve
+#
+# Note: if you have a local Scaleway CLI profile (~/.config/scw/config.yaml) you
+# will see a "Multiple variable sources detected" warning. This is cosmetic — the
+# provider is using the environment variables above, not your real credentials.
 
 terraform {
   required_providers {
