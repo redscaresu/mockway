@@ -40,4 +40,5 @@ examples/**/.terraform/
 examples/**/.terraform.lock.hcl
 examples/**/terraform.tfstate
 examples/**/terraform.tfstate.backup
+examples/**/terraform.tfstate.*.backup
 examples/**/*.db
