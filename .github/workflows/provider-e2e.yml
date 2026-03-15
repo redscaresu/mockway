@@ -63,3 +63,37 @@ jobs:
         with:
           name: provider-e2e-log
           path: provider-e2e.log
+
+  tag:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump patch version and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          latest=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$latest" ]; then
+            latest="v0.1.0"
+            git tag "$latest"
+            git push origin "$latest"
+            exit 0
+          fi
+
+          major=$(echo "$latest" | cut -d. -f1 | tr -d 'v')
+          minor=$(echo "$latest" | cut -d. -f2)
+          patch=$(echo "$latest" | cut -d. -f3)
+          next="v${major}.${minor}.$((patch + 1))"
+
+          echo "Latest tag: $latest → Next tag: $next"
+          git tag "$next"
+          git push origin "$next"
