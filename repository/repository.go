@@ -3168,8 +3168,12 @@ func (r *Repository) DeleteRedisEndpoint(zone, endpointID string) (map[string]an
 // --- LB ACLs ---
 
 func (r *Repository) CreateLBACL(frontendID string, data map[string]any) (map[string]any, error) {
+	if _, err := r.GetFrontend(frontendID); err != nil {
+		return nil, models.ErrNotFound
+	}
 	data = cloneMap(data)
 	data["frontend_id"] = frontendID
+	data["frontend"] = map[string]any{"id": frontendID}
 	now := nowRFC3339()
 	data["created_at"] = now
 	data["updated_at"] = now

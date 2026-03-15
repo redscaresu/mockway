@@ -2190,6 +2190,47 @@ func TestFrontendACLsEndpointReturnsEmpty(t *testing.T) {
 	require.Len(t, body["acls"].([]any), 0)
 }
 
+func TestCreateLBACLIncludesFrontendObject(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+
+	_, fe := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends", map[string]any{
+		"name": "http", "lb_id": lbID,
+	})
+	feID := fe["id"].(string)
+
+	status, acl := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/"+feID+"/acls", map[string]any{
+		"name":  "deny-all",
+		"index": 1,
+		"action": map[string]any{"type": "deny"},
+		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
+	})
+	require.Equal(t, 200, status)
+
+	// Provider dereferences acl.Frontend.ID without a nil check — the response
+	// must include a "frontend" object or the provider panics.
+	frontend, ok := acl["frontend"].(map[string]any)
+	require.True(t, ok, "ACL response must include a frontend object, got: %T %v", acl["frontend"], acl["frontend"])
+	require.Equal(t, feID, frontend["id"])
+}
+
+func TestCreateLBACLRejects404ForMissingFrontend(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/non-existent-id/acls", map[string]any{
+		"name":  "deny-all",
+		"index": 1,
+		"action": map[string]any{"type": "deny"},
+		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
+	})
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+}
+
 func TestLBDeleteRejectsWhenChildrenExist(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
