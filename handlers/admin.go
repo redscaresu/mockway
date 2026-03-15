@@ -16,6 +16,22 @@ func (app *Application) ResetState(w http.ResponseWriter, _ *http.Request) {
 	writeNoContent(w)
 }
 
+func (app *Application) SnapshotState(w http.ResponseWriter, _ *http.Request) {
+	if err := app.repo.Snapshot(); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
+func (app *Application) RestoreState(w http.ResponseWriter, _ *http.Request) {
+	if err := app.repo.Restore(); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
 func (app *Application) GetState(w http.ResponseWriter, _ *http.Request) {
 	state, err := app.repo.FullState()
 	if err != nil {

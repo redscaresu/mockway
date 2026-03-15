@@ -96,6 +96,12 @@ GET  /mock/state          — full resource graph as JSON
 GET  /mock/state/{service} — single service (instance, vpc, lb, k8s, rdb, iam)
 ```
 
+## Examples
+
+The [`examples/`](examples/) directory contains self-contained Terraform configs you can run against mockway to see it in action. It includes working configs that apply and destroy cleanly, and deliberately misconfigured configs that show the kinds of mistakes mockway catches — mistakes that `terraform validate` and `terraform plan` both miss.
+
+See [examples/README.md](examples/README.md) for step-by-step instructions.
+
 ## Practical Example
 
 [hardened-scaleway-openclaw](https://github.com/redscaresu/hardened-scaleway-openclaw) is a real Terraform config that provisions a hardened Scaleway instance with IAM credentials, a security group, and cloud-init. It uses mockway for offline testing via `make test-apply`.

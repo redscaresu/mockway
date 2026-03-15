@@ -21,6 +21,8 @@ func NewApplication(repo *repository.Repository) *Application {
 func (app *Application) RegisterRoutes(r chi.Router) {
 	// Admin routes do not require auth.
 	r.Post("/mock/reset", app.ResetState)
+	r.Post("/mock/snapshot", app.SnapshotState)
+	r.Post("/mock/restore", app.RestoreState)
 	r.Get("/mock/state", app.GetState)
 	r.Get("/mock/state/{service}", app.GetServiceState)
 
@@ -147,6 +149,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/instances", app.ListRDBInstances)
 			r.Get("/instances/{instance_id}", app.GetRDBInstance)
 			r.Patch("/instances/{instance_id}", app.UpdateRDBInstance)
+			r.Post("/instances/{instance_id}/upgrade", app.UpgradeRDBInstance)
 			r.Get("/instances/{instance_id}/certificate", app.GetRDBCertificate)
 			r.Delete("/instances/{instance_id}", app.DeleteRDBInstance)
 
@@ -156,6 +159,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 
 			r.Post("/instances/{instance_id}/users", app.CreateRDBUser)
 			r.Get("/instances/{instance_id}/users", app.ListRDBUsers)
+			r.Patch("/instances/{instance_id}/users/{user_name}", app.UpdateRDBUser)
 			r.Delete("/instances/{instance_id}/users/{user_name}", app.DeleteRDBUser)
 
 			r.Put("/instances/{instance_id}/acls", app.SetRDBACLs)
@@ -170,6 +174,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/clusters", app.CreateRedisCluster)
 			r.Get("/clusters", app.ListRedisClusters)
 			r.Get("/clusters/{cluster_id}", app.GetRedisCluster)
+			r.Get("/clusters/{cluster_id}/certificate", app.GetRedisCertificate)
 			r.Patch("/clusters/{cluster_id}", app.UpdateRedisCluster)
 			r.Delete("/clusters/{cluster_id}", app.DeleteRedisCluster)
 		})

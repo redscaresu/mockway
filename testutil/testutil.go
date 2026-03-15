@@ -61,6 +61,22 @@ func ResetState(t *testing.T, ts *httptest.Server) {
 	}
 }
 
+func SnapshotState(t *testing.T, ts *httptest.Server) {
+	t.Helper()
+	status, _ := doJSON(t, ts, http.MethodPost, "/mock/snapshot", nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", status)
+	}
+}
+
+func RestoreState(t *testing.T, ts *httptest.Server) {
+	t.Helper()
+	status, _ := doJSON(t, ts, http.MethodPost, "/mock/restore", nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", status)
+	}
+}
+
 func GetState(t *testing.T, ts *httptest.Server) map[string]any {
 	t.Helper()
 	status, body := doJSON(t, ts, http.MethodGet, "/mock/state", nil)

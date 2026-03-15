@@ -111,6 +111,58 @@ func TestExistsAndReset(t *testing.T) {
 	require.Len(t, vpcs, 0)
 }
 
+func TestSnapshotAndRestore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "repo.db")
+	repo, err := repository.New(dbPath)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	vpc, err := repo.CreateVPC("fr-par", map[string]any{"name": "baseline"})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Snapshot())
+
+	_, err = repo.CreateVPC("fr-par", map[string]any{"name": "after-snapshot"})
+	require.NoError(t, err)
+
+	vpcs, err := repo.ListVPCs("fr-par")
+	require.NoError(t, err)
+	require.Len(t, vpcs, 2)
+
+	require.NoError(t, repo.Restore())
+
+	vpcs, err = repo.ListVPCs("fr-par")
+	require.NoError(t, err)
+	require.Len(t, vpcs, 1)
+	require.Equal(t, vpc["id"], vpcs[0]["id"])
+	require.Equal(t, "baseline", vpcs[0]["name"])
+}
+
+func TestRestoreWithoutSnapshotReturnsNotFound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "repo.db")
+	repo, err := repository.New(dbPath)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	err = repo.Restore()
+	require.ErrorIs(t, err, models.ErrNotFound)
+}
+
+func TestResetClearsSnapshot(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "repo.db")
+	repo, err := repository.New(dbPath)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	_, err = repo.CreateVPC("fr-par", map[string]any{"name": "baseline"})
+	require.NoError(t, err)
+	require.NoError(t, repo.Snapshot())
+	require.NoError(t, repo.Reset())
+
+	err = repo.Restore()
+	require.ErrorIs(t, err, models.ErrNotFound)
+}
+
 func TestUpdateSecurityGroup(t *testing.T) {
 	repo, err := repository.New(":memory:")
 	require.NoError(t, err)
@@ -448,6 +500,14 @@ func TestRDBEndpointHelpersAndRandom(t *testing.T) {
 	// Non-map entry still returns an error.
 	_, err = repository.BuildRDBEndpointsFromInit([]any{"bad"}, "PostgreSQL-15")
 	require.Error(t, err)
+
+	// "private_network_id" alias works as an alternative to "id".
+	aliasEPs, err := repository.BuildRDBEndpointsFromInit([]any{map[string]any{
+		"private_network": map[string]any{"private_network_id": "pn-2"},
+	}}, "PostgreSQL-15")
+	require.NoError(t, err)
+	require.Len(t, aliasEPs, 1)
+	require.Equal(t, "pn-2", aliasEPs[0].(map[string]any)["private_network"].(map[string]any)["id"])
 
 	// Also exercise JSON unmarshal failure path in repository helpers indirectly.
 	var bad map[string]any

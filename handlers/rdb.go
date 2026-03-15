@@ -79,6 +79,30 @@ func (app *Application) UpdateRDBInstance(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (app *Application) UpgradeRDBInstance(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instance_id")
+	current, err := app.repo.GetRDBInstance(instanceID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	patch := map[string]any{}
+	if version, ok := current["version"]; ok {
+		patch["version"] = version
+	}
+	if engine, ok := current["engine"].(string); ok && engine != "" {
+		patch["engine"] = engine
+	}
+
+	out, err := app.repo.UpdateRDBInstance(instanceID, patch)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (app *Application) GetRDBCertificate(w http.ResponseWriter, r *http.Request) {
 	if _, err := app.repo.GetRDBInstance(chi.URLParam(r, "instance_id")); err != nil {
 		writeDomainError(w, err)
@@ -154,6 +178,20 @@ func (app *Application) ListRDBUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeList(w, "users", items)
+}
+
+func (app *Application) UpdateRDBUser(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateRDBUser(chi.URLParam(r, "instance_id"), chi.URLParam(r, "user_name"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (app *Application) DeleteRDBUser(w http.ResponseWriter, r *http.Request) {

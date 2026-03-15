@@ -52,6 +52,19 @@ func (app *Application) UpdateRedisCluster(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (app *Application) GetRedisCertificate(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetRedisCluster(chi.URLParam(r, "cluster_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"certificate": map[string]any{
+			"content": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n",
+		},
+	})
+}
+
 func (app *Application) DeleteRedisCluster(w http.ResponseWriter, r *http.Request) {
 	if err := app.repo.DeleteRedisCluster(chi.URLParam(r, "cluster_id")); err != nil {
 		writeDomainError(w, err)

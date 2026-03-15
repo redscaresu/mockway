@@ -37,3 +37,9 @@ CORTEX.md
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Terraform working directories in examples
+examples/**/.terraform/
+examples/**/.terraform.lock.hcl
+examples/**/terraform.tfstate
+examples/**/terraform.tfstate.backup

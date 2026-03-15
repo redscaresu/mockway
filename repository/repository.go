@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db             *sql.DB
+	path           string
+	snapshotPath   string
+	cleanupOnClose bool
 }
 
 type colVal struct {
@@ -25,22 +29,65 @@ type colVal struct {
 }
 
 func New(path string) (*Repository, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+	actualPath := path
+	cleanupOnClose := false
+	if path == ":memory:" {
+		file, err := os.CreateTemp("", "mockway-*.sqlite")
+		if err != nil {
+			return nil, fmt.Errorf("create temp db: %w", err)
+		}
+		actualPath = file.Name()
+		cleanupOnClose = true
+		if err := file.Close(); err != nil {
+			_ = os.Remove(actualPath)
+			return nil, fmt.Errorf("close temp db file: %w", err)
+		}
 	}
-	db.SetMaxOpenConns(1)
 
-	r := &Repository{db: db}
+	db, err := openDB(actualPath)
+	if err != nil {
+		if cleanupOnClose {
+			_ = os.Remove(actualPath)
+		}
+		return nil, err
+	}
+
+	r := &Repository{
+		db:             db,
+		path:           actualPath,
+		snapshotPath:   actualPath + ".snapshot",
+		cleanupOnClose: cleanupOnClose,
+	}
 	if err := r.init(); err != nil {
 		_ = db.Close()
+		if cleanupOnClose {
+			_ = os.Remove(actualPath)
+		}
 		return nil, err
 	}
 	return r, nil
 }
 
 func (r *Repository) Close() error {
-	return r.db.Close()
+	if r.db == nil {
+		return nil
+	}
+	err := r.db.Close()
+	if r.cleanupOnClose {
+		_ = os.Remove(r.path)
+		_ = os.Remove(r.snapshotPath)
+		_ = os.Remove(r.path + ".restore")
+	}
+	return err
+}
+
+func openDB(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
 func (r *Repository) init() error {
@@ -137,7 +184,7 @@ func (r *Repository) init() error {
 			PRIMARY KEY (instance_id, name)
 		)`,
 		`CREATE TABLE IF NOT EXISTS rdb_privileges (
-			instance_id TEXT NOT NULL REFERENCES rdb_instances(id),
+			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
 			user_name TEXT NOT NULL,
 			database_name TEXT NOT NULL,
 			data JSON NOT NULL,
@@ -248,7 +295,70 @@ func (r *Repository) Reset() error {
 			return err
 		}
 	}
+	return r.clearSnapshot()
+}
+
+func (r *Repository) Snapshot() error {
+	if err := r.clearSnapshot(); err != nil {
+		return err
+	}
+	if _, err := r.db.Exec(`VACUUM main INTO ` + sqliteStringLiteral(r.snapshotPath)); err != nil {
+		return fmt.Errorf("snapshot db: %w", err)
+	}
 	return nil
+}
+
+func (r *Repository) Restore() error {
+	if _, err := os.Stat(r.snapshotPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return models.ErrNotFound
+		}
+		return fmt.Errorf("stat snapshot: %w", err)
+	}
+
+	restorePath := r.path + ".restore"
+	if err := os.Remove(restorePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale restore db: %w", err)
+	}
+	if err := copyFile(r.snapshotPath, restorePath); err != nil {
+		return fmt.Errorf("copy snapshot: %w", err)
+	}
+	if err := r.db.Close(); err != nil {
+		return fmt.Errorf("close db for restore: %w", err)
+	}
+	if err := os.Rename(restorePath, r.path); err != nil {
+		db, reopenErr := openDB(r.path)
+		if reopenErr == nil {
+			r.db = db
+		}
+		return fmt.Errorf("swap restored db: %w", err)
+	}
+
+	db, err := openDB(r.path)
+	if err != nil {
+		return err
+	}
+	r.db = db
+	return r.init()
+}
+
+func (r *Repository) clearSnapshot() error {
+	if err := os.Remove(r.snapshotPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove snapshot: %w", err)
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o600)
+}
+
+func sqliteStringLiteral(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "''") + "'"
 }
 
 func marshalData(data map[string]any) ([]byte, error) {
@@ -483,7 +593,10 @@ func (r *Repository) DeletePrivateNetwork(id string) error {
 
 func (r *Repository) CreateSecurityGroup(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
+	now := nowRFC3339()
 	data["zone"] = zone
+	data["created_at"] = now
+	data["updated_at"] = now
 	return r.createSimple("instance_security_groups", "zone", zone, data)
 }
 func (r *Repository) GetSecurityGroup(id string) (map[string]any, error) {
@@ -529,6 +642,7 @@ func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[s
 		}
 		next[k] = v
 	}
+	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -821,6 +935,7 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 	data["zone"] = zone
 	data["status"] = "ready"
 	data["created_at"] = now
+	data["updated_at"] = now
 	id := newID()
 	data["id"] = id
 	data["ip"] = []any{map[string]any{
@@ -854,6 +969,7 @@ func (r *Repository) UpdateLB(id string, patch map[string]any) (map[string]any, 
 		}
 		next[k] = v
 	}
+	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lbs", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -891,9 +1007,12 @@ func (r *Repository) DeleteLB(id string) error {
 
 func (r *Repository) CreateLBIP(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
+	now := nowRFC3339()
 	data["zone"] = zone
 	data["ip_address"] = fakePublicIP()
 	data["status"] = "ready"
+	data["created_at"] = now
+	data["updated_at"] = now
 	data["lb_id"] = nil
 	data["reverse"] = ""
 	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
@@ -948,6 +1067,7 @@ func (r *Repository) UpdateFrontend(id string, patch map[string]any) (map[string
 		}
 		next[k] = v
 	}
+	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_frontends", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -987,12 +1107,12 @@ func (r *Repository) CreateBackend(data map[string]any) (map[string]any, error) 
 	}
 	if _, ok := data["health_check"]; !ok {
 		data["health_check"] = map[string]any{
-			"port":                   data["forward_port"],
-			"check_delay":            "60s",
-			"check_timeout":          "30s",
-			"check_max_retries":      3,
-			"transient_check_delay":  "0.5s",
-			"tcp_config":             map[string]any{},
+			"port":                  data["forward_port"],
+			"check_delay":           "60s",
+			"check_timeout":         "30s",
+			"check_max_retries":     3,
+			"transient_check_delay": "0.5s",
+			"tcp_config":            map[string]any{},
 		}
 	}
 	return r.createSimple("lb_backends", "lb_id", lbID, data)
@@ -1018,6 +1138,7 @@ func (r *Repository) UpdateBackend(id string, patch map[string]any) (map[string]
 		}
 		next[k] = v
 	}
+	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_backends", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -1078,8 +1199,8 @@ func (r *Repository) CreateCluster(region string, data map[string]any) (map[stri
 	}
 	if _, ok := data["auto_upgrade"]; !ok {
 		data["auto_upgrade"] = map[string]any{
-			"enable":                false,
-			"maintenance_window":    map[string]any{"day": "any", "start_hour": float64(0)},
+			"enable":             false,
+			"maintenance_window": map[string]any{"day": "any", "start_hour": float64(0)},
 		}
 	}
 	if _, ok := data["autoscaler_config"]; !ok {
@@ -1088,12 +1209,12 @@ func (r *Repository) CreateCluster(region string, data map[string]any) (map[stri
 			"scale_down_delay_after_add":       "10m",
 			"estimator":                        "binpacking",
 			"expander":                         "random",
-			"ignore_daemonsets_utilization":     false,
-			"balance_similar_node_groups":       false,
-			"expendable_pods_priority_cutoff":   float64(-10),
-			"scale_down_unneeded_time":          "10m",
-			"scale_down_utilization_threshold":  0.5,
-			"max_graceful_termination_sec":      float64(600),
+			"ignore_daemonsets_utilization":    false,
+			"balance_similar_node_groups":      false,
+			"expendable_pods_priority_cutoff":  float64(-10),
+			"scale_down_unneeded_time":         "10m",
+			"scale_down_utilization_threshold": 0.5,
+			"max_graceful_termination_sec":     float64(600),
 		}
 	}
 	if _, ok := data["feature_gates"]; !ok {
@@ -1187,6 +1308,20 @@ func (r *Repository) CreatePool(region, clusterID string, data map[string]any) (
 	if _, ok := data["nodes"]; !ok {
 		data["nodes"] = []any{}
 	}
+	if _, ok := data["min_size"]; !ok {
+		if s, ok := data["size"]; ok {
+			data["min_size"] = s
+		} else {
+			data["min_size"] = float64(1)
+		}
+	}
+	if _, ok := data["max_size"]; !ok {
+		if s, ok := data["size"]; ok {
+			data["max_size"] = s
+		} else {
+			data["max_size"] = float64(1)
+		}
+	}
 	if _, ok := data["root_volume_type"]; !ok {
 		data["root_volume_type"] = "l_ssd"
 	}
@@ -1233,6 +1368,7 @@ func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[
 	data["region"] = region
 	data["status"] = "ready"
 	data["created_at"] = now
+	data["updated_at"] = now
 	port := rdbPortFromEngine(data["engine"])
 	if _, ok := data["endpoints"]; !ok {
 		data["endpoints"] = []any{map[string]any{"ip": fakePublicIP(), "port": port}}
@@ -1244,7 +1380,7 @@ func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[
 	if _, ok := data["backup_schedule"]; !ok {
 		data["backup_schedule"] = map[string]any{
 			"disabled":  false,
-			"frequency":  24,
+			"frequency": 24,
 			"retention": 7,
 		}
 	}
@@ -1330,6 +1466,15 @@ func (r *Repository) CreateRDBDatabase(instanceID, name string, data map[string]
 	data = cloneMap(data)
 	data["instance_id"] = instanceID
 	data["name"] = name
+	if _, ok := data["managed"]; !ok {
+		data["managed"] = false
+	}
+	if _, ok := data["owner"]; !ok {
+		data["owner"] = ""
+	}
+	if _, ok := data["size"]; !ok {
+		data["size"] = float64(0)
+	}
 	if err := r.insertJSON("rdb_databases", []colVal{{name: "instance_id", val: instanceID}, {name: "name", val: name}}, data); err != nil {
 		return nil, err
 	}
@@ -1346,10 +1491,39 @@ func (r *Repository) CreateRDBUser(instanceID, name string, data map[string]any)
 	data = cloneMap(data)
 	data["instance_id"] = instanceID
 	data["name"] = name
+	if _, ok := data["is_admin"]; !ok {
+		data["is_admin"] = false
+	}
 	if err := r.insertJSON("rdb_users", []colVal{{name: "instance_id", val: instanceID}, {name: "name", val: name}}, data); err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+func (r *Repository) UpdateRDBUser(instanceID, name string, patch map[string]any) (map[string]any, error) {
+	row := r.db.QueryRow("SELECT data FROM rdb_users WHERE instance_id = ? AND name = ?", instanceID, name)
+	var raw []byte
+	if err := row.Scan(&raw); err != nil {
+		return nil, models.ErrNotFound
+	}
+	current, err := unmarshalData(raw)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "instance_id" || k == "name" {
+			continue
+		}
+		next[k] = v
+	}
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.db.Exec("UPDATE rdb_users SET data = ? WHERE instance_id = ? AND name = ?", b, instanceID, name); err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 func (r *Repository) ListRDBUsers(instanceID string) ([]map[string]any, error) {
 	return r.listJSON("rdb_users", "instance_id", instanceID)
@@ -1411,6 +1585,39 @@ func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[st
 		if del, ok := change["delete"].(map[string]any); ok {
 			if id, ok := del["id"].(string); ok && id != "" {
 				_ = r.deleteBy("domain_records", "id = ?", id)
+			}
+		}
+		if set, ok := change["set"].(map[string]any); ok {
+			// "set" replaces matching records: delete by id_fields match, then add.
+			if idFields, ok := set["id_fields"].(map[string]any); ok {
+				existing, _ := r.ListDomainRecords(dnsZone)
+				for _, rec := range existing {
+					match := true
+					for k, v := range idFields {
+						if rec[k] != v {
+							match = false
+							break
+						}
+					}
+					if match {
+						if id, ok := rec["id"].(string); ok {
+							_ = r.deleteBy("domain_records", "id = ?", id)
+						}
+					}
+				}
+			}
+			if records, ok := set["records"].([]any); ok {
+				for _, rec := range records {
+					recMap, ok := rec.(map[string]any)
+					if !ok {
+						continue
+					}
+					recMap = cloneMap(recMap)
+					recMap["id"] = newID()
+					if err := r.insertJSON("domain_records", []colVal{{name: "id", val: recMap["id"]}, {name: "dns_zone", val: dnsZone}}, recMap); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 	}
@@ -1563,10 +1770,18 @@ func (r *Repository) CreateRedisCluster(zone string, data map[string]any) (map[s
 	data["id"] = id
 	data["zone"] = zone
 	data["status"] = "ready"
-	data["cluster_size"] = float64(1)
-	data["tls_enabled"] = false
-	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
-	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	if _, ok := data["cluster_size"]; !ok {
+		data["cluster_size"] = float64(1)
+	}
+	if _, ok := data["tls_enabled"]; !ok {
+		data["tls_enabled"] = false
+	}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
 	data["created_at"] = now
 	data["updated_at"] = now
 	if _, ok := data["tags"]; !ok {
@@ -1645,9 +1860,15 @@ func (r *Repository) CreateRegistryNamespace(region string, data map[string]any)
 	data["endpoint"] = fmt.Sprintf("rg.%s.scw.cloud/%s", region, data["name"])
 	data["image_count"] = float64(0)
 	data["size"] = float64(0)
-	data["is_public"] = false
-	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
-	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	if _, ok := data["is_public"]; !ok {
+		data["is_public"] = false
+	}
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
 	data["created_at"] = now
 	data["updated_at"] = now
 
@@ -1928,10 +2149,15 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		privileges, err := r.listJSON("rdb_privileges", "", "")
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
-			"instances": instances,
-			"databases": databases,
-			"users":     users,
+			"instances":  instances,
+			"databases":  databases,
+			"users":      users,
+			"privileges": privileges,
 		}, nil
 	case "redis":
 		clusters, err := r.listJSON("redis_clusters", "", "")
@@ -1971,6 +2197,14 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			"api_keys":     apiKeys,
 			"policies":     policies,
 			"ssh_keys":     sshKeys,
+		}, nil
+	case "domain":
+		records, err := r.listJSON("domain_records", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"records": records,
 		}, nil
 	default:
 		return nil, models.ErrNotFound
