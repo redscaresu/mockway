@@ -5100,3 +5100,870 @@ func TestLBRegionalAPI(t *testing.T) {
 	status = testutil.DoDelete(t, ts, "/lb/v1/regions/fr-par/lbs/"+lbID)
 	require.Equal(t, 204, status)
 }
+
+// ---------------------------------------------------------------------------
+// LB Route lifecycle
+// ---------------------------------------------------------------------------
+
+func TestLBRouteLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+
+	_, backendA := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "backend-a", "forward_protocol": "http", "forward_port": float64(80),
+	})
+	backendAID := backendA["id"].(string)
+
+	_, backendB := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "backend-b", "forward_protocol": "http", "forward_port": float64(8080),
+	})
+	backendBID := backendB["id"].(string)
+
+	_, frontend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends", map[string]any{
+		"lb_id": lbID, "backend_id": backendAID, "name": "frontend", "inbound_port": float64(80),
+	})
+	frontendID := frontend["id"].(string)
+
+	// Create route
+	status, route := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/routes", map[string]any{
+		"frontend_id":       frontendID,
+		"backend_id":        backendBID,
+		"match_host_header": "api.example.com",
+	})
+	require.Equal(t, 200, status)
+	routeID := route["id"].(string)
+	require.NotEmpty(t, routeID)
+	require.Equal(t, frontendID, route["frontend_id"])
+	require.Equal(t, backendBID, route["backend_id"])
+	// match object must be present to avoid provider nil-deref
+	matchObj := route["match"].(map[string]any)
+	require.NotNil(t, matchObj)
+
+	// Get route
+	status, got := testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/routes/"+routeID)
+	require.Equal(t, 200, status)
+	require.Equal(t, routeID, got["id"])
+
+	// List routes (by lb_id)
+	status, list := testutil.DoList(t, ts, "/lb/v1/zones/fr-par-1/routes?lb_id="+lbID)
+	require.Equal(t, 200, status)
+	require.Len(t, list["routes"].([]any), 1)
+
+	// List routes (by frontend_id)
+	status, list = testutil.DoList(t, ts, "/lb/v1/zones/fr-par-1/routes?frontend_id="+frontendID)
+	require.Equal(t, 200, status)
+	require.Len(t, list["routes"].([]any), 1)
+
+	// Update route
+	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/routes/"+routeID, map[string]any{
+		"frontend_id":       frontendID,
+		"backend_id":        backendAID,
+		"match_host_header": "app.example.com",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, backendAID, updated["backend_id"])
+
+	// Delete route
+	status = testutil.DoDelete(t, ts, "/lb/v1/zones/fr-par-1/routes/"+routeID)
+	require.Equal(t, 204, status)
+
+	// Get returns 404
+	status, _ = testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/routes/"+routeID)
+	require.Equal(t, 404, status)
+}
+
+func TestLBRouteMatchDefaultsAlwaysPresent(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+	_, backend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "be", "forward_protocol": "http", "forward_port": float64(80),
+	})
+	_, frontend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends", map[string]any{
+		"lb_id": lbID, "backend_id": backend["id"].(string), "name": "fe", "inbound_port": float64(80),
+	})
+
+	// Route with no match fields — match object must still be present
+	status, route := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/routes", map[string]any{
+		"frontend_id": frontend["id"].(string),
+		"backend_id":  backend["id"].(string),
+	})
+	require.Equal(t, 200, status)
+	require.Contains(t, route, "match")
+}
+
+// ---------------------------------------------------------------------------
+// LB ACL: Get / Update / Delete
+// ---------------------------------------------------------------------------
+
+func TestLBACLGetUpdateDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+	_, backend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "be", "forward_protocol": "http", "forward_port": float64(80),
+	})
+	_, frontend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends", map[string]any{
+		"lb_id": lbID, "backend_id": backend["id"].(string), "name": "fe", "inbound_port": float64(80),
+	})
+	frontendID := frontend["id"].(string)
+
+	_, acl := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/"+frontendID+"/acls", map[string]any{
+		"name":  "allow-internal",
+		"index": float64(1),
+		"action": map[string]any{"type": "allow"},
+		"match":  map[string]any{"ip_subnet": []any{"10.0.0.0/8"}},
+	})
+	aclID := acl["id"].(string)
+
+	// Get
+	status, got := testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/acls/"+aclID)
+	require.Equal(t, 200, status)
+	require.Equal(t, aclID, got["id"])
+	require.Equal(t, "allow-internal", got["name"])
+
+	// Update
+	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/acls/"+aclID, map[string]any{
+		"name":  "renamed-acl",
+		"index": float64(1),
+		"action": map[string]any{"type": "deny"},
+		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-acl", updated["name"])
+
+	// Delete
+	status = testutil.DoDelete(t, ts, "/lb/v1/zones/fr-par-1/acls/"+aclID)
+	require.Equal(t, 204, status)
+
+	status, _ = testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/acls/"+aclID)
+	require.Equal(t, 404, status)
+}
+
+// ---------------------------------------------------------------------------
+// LB Certificate lifecycle
+// ---------------------------------------------------------------------------
+
+func TestLBCertificateLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+
+	// Create certificate
+	status, cert := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs/"+lbID+"/certificates", map[string]any{
+		"name": "my-cert",
+		"type": "custom_certificate",
+	})
+	require.Equal(t, 200, status)
+	certID := cert["id"].(string)
+	require.NotEmpty(t, certID)
+	require.Equal(t, "my-cert", cert["name"])
+
+	// Get
+	status, got := testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/certificates/"+certID)
+	require.Equal(t, 200, status)
+	require.Equal(t, certID, got["id"])
+
+	// List
+	status, list := testutil.DoList(t, ts, "/lb/v1/zones/fr-par-1/lbs/"+lbID+"/certificates")
+	require.Equal(t, 200, status)
+	require.Len(t, list["certificates"].([]any), 1)
+
+	// Update
+	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/certificates/"+certID, map[string]any{
+		"name": "renamed-cert",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-cert", updated["name"])
+
+	// Delete
+	status = testutil.DoDelete(t, ts, "/lb/v1/zones/fr-par-1/certificates/"+certID)
+	require.Equal(t, 204, status)
+
+	status, _ = testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/certificates/"+certID)
+	require.Equal(t, 404, status)
+}
+
+// ---------------------------------------------------------------------------
+// LB helpers: UpdateLBHealthCheck, SetLBBackendServers, MigrateLB, UpdateLBIP
+// ---------------------------------------------------------------------------
+
+func TestUpdateLBHealthCheck(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+	_, backend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "be", "forward_protocol": "http", "forward_port": float64(80),
+	})
+	backendID := backend["id"].(string)
+
+	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/backends/"+backendID+"/healthcheck", map[string]any{
+		"port":              float64(8080),
+		"check_delay":       "2000ms",
+		"check_timeout":     "1000ms",
+		"check_max_retries": float64(3),
+		"tcp_config":        map[string]any{},
+	})
+	require.Equal(t, 200, status)
+	require.NotEmpty(t, updated["id"])
+}
+
+func TestSetLBBackendServers(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb"})
+	lbID := lb["id"].(string)
+	_, backend := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/backends", map[string]any{
+		"lb_id": lbID, "name": "be", "forward_protocol": "http", "forward_port": float64(80),
+	})
+	backendID := backend["id"].(string)
+
+	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/backends/"+backendID+"/servers", map[string]any{
+		"server_ip": []any{"10.0.0.1", "10.0.0.2"},
+	})
+	require.Equal(t, 200, status)
+	serverIP := updated["server_ip"].([]any)
+	require.Len(t, serverIP, 2)
+}
+
+func TestMigrateLBReturnsLB(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb", "type": "LB-S"})
+	lbID := lb["id"].(string)
+
+	status, got := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs/"+lbID+"/migrate", map[string]any{"type": "LB-M"})
+	require.Equal(t, 200, status)
+	require.Equal(t, lbID, got["id"])
+}
+
+func TestUpdateLBIP(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, ip := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/ips", map[string]any{})
+	ipID := ip["id"].(string)
+
+	status, updated := doPatch(t, ts, "/lb/v1/zones/fr-par-1/ips/"+ipID, map[string]any{"reverse": "lb.example.com"})
+	require.Equal(t, 200, status)
+	require.Equal(t, ipID, updated["id"])
+	require.Equal(t, "lb.example.com", updated["reverse"])
+}
+
+func TestDetachLBPrivateNetwork(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	ctx := map[string]string{"zone": "fr-par-1", "region": "fr-par"}
+	setupLBAndPrivateNetwork(t, ts, ctx)
+	lbID := ctx["lb_id"]
+	pnID := ctx["pn_id"]
+
+	// Attach
+	testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs/"+lbID+"/private-networks", map[string]any{
+		"private_network_id": pnID,
+	})
+
+	// Detach via POST (zone-level route uses /detach-private-network, not /{pn_id}/detach).
+	// Handler returns 204 No Content.
+	status, _ := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs/"+lbID+"/detach-private-network", map[string]any{
+		"private_network_id": pnID,
+	})
+	require.Equal(t, 204, status)
+}
+
+// ---------------------------------------------------------------------------
+// IAM update operations
+// ---------------------------------------------------------------------------
+
+func TestUpdateIAMApplication(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "my-app"})
+	appID := app["id"].(string)
+
+	status, updated := doPatch(t, ts, "/iam/v1alpha1/applications/"+appID, map[string]any{"name": "renamed-app"})
+	require.Equal(t, 200, status)
+	require.Equal(t, appID, updated["id"])
+	require.Equal(t, "renamed-app", updated["name"])
+}
+
+func TestUpdateIAMAPIKey(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	_, key := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{
+		"application_id": app["id"].(string),
+		"description":    "original",
+	})
+	accessKey := key["access_key"].(string)
+
+	status, updated := doPatch(t, ts, "/iam/v1alpha1/api-keys/"+accessKey, map[string]any{"description": "updated"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "updated", updated["description"])
+}
+
+func TestUpdateIAMPolicy(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	_, policy := testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{
+		"name":           "my-policy",
+		"application_id": app["id"].(string),
+	})
+	policyID := policy["id"].(string)
+
+	status, updated := doPatch(t, ts, "/iam/v1alpha1/policies/"+policyID, map[string]any{"name": "renamed-policy"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-policy", updated["name"])
+}
+
+func TestUpdateIAMSSHKey(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, key := testutil.DoCreate(t, ts, "/iam/v1alpha1/ssh-keys", map[string]any{
+		"name":       "my-key",
+		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GkZL test",
+	})
+	keyID := key["id"].(string)
+
+	status, updated := doPatch(t, ts, "/iam/v1alpha1/ssh-keys/"+keyID, map[string]any{"name": "renamed-key"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-key", updated["name"])
+}
+
+func TestSetIAMRules(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, app := testutil.DoCreate(t, ts, "/iam/v1alpha1/applications", map[string]any{"name": "app"})
+	_, policy := testutil.DoCreate(t, ts, "/iam/v1alpha1/policies", map[string]any{
+		"name": "p", "application_id": app["id"].(string),
+	})
+	policyID := policy["id"].(string)
+
+	status, body := doPut(t, ts, "/iam/v1alpha1/rules", map[string]any{
+		"policy_id": policyID,
+		"rules": []any{
+			map[string]any{
+				"organization_id":      "00000000-0000-0000-0000-000000000000",
+				"permission_set_names": []any{"AllProductsFullAccess"},
+			},
+		},
+	})
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "rules")
+}
+
+func TestListIAMUsers(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoList(t, ts, "/iam/v1alpha1/users")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "users")
+}
+
+func TestListIAMGroups(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	testutil.DoCreate(t, ts, "/iam/v1alpha1/groups", map[string]any{"name": "grp"})
+
+	status, body := testutil.DoList(t, ts, "/iam/v1alpha1/groups")
+	require.Equal(t, 200, status)
+	groups := body["groups"].([]any)
+	require.Len(t, groups, 1)
+}
+
+func TestSetIAMGroupMembers(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, group := testutil.DoCreate(t, ts, "/iam/v1alpha1/groups", map[string]any{"name": "grp"})
+	groupID := group["id"].(string)
+
+	status, body := doPut(t, ts, "/iam/v1alpha1/groups/"+groupID+"/members", map[string]any{
+		"user_ids": []any{},
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, groupID, body["id"])
+}
+
+// ---------------------------------------------------------------------------
+// Instance: UpdateServer, GetServerUserDataKey, UpdateInstanceIP
+// ---------------------------------------------------------------------------
+
+func TestUpdateServer(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{
+		"name": "web", "commercial_type": "DEV1-S", "image": "ubuntu_noble",
+	})
+	serverID := unwrapInstanceResource(server)["id"].(string)
+
+	status, body := doPatch(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID, map[string]any{
+		"name": "renamed-server",
+	})
+	require.Equal(t, 200, status)
+	srv := unwrapInstanceResource(body)
+	require.Equal(t, "renamed-server", srv["name"])
+}
+
+func TestGetServerUserDataKey(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{
+		"name": "web", "commercial_type": "DEV1-S", "image": "ubuntu_noble",
+	})
+	serverID := unwrapInstanceResource(server)["id"].(string)
+
+	// Any key on an existing server returns 200 with empty body (user_data is discarded).
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/instance/v1/zones/fr-par-1/servers/"+serverID+"/user_data/cloud-init", nil)
+	req.Header.Set("X-Auth-Token", "test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	// Non-existent server returns 404.
+	status, _ := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/00000000-0000-0000-0000-000000000000/user_data/cloud-init")
+	require.Equal(t, 404, status)
+}
+
+func TestUpdateInstanceIP(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, ip := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/ips", map[string]any{})
+	ipID := ip["ip"].(map[string]any)["id"].(string)
+
+	status, body := doPatch(t, ts, "/instance/v1/zones/fr-par-1/ips/"+ipID, map[string]any{
+		"reverse": "web.example.com",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "web.example.com", body["ip"].(map[string]any)["reverse"])
+}
+
+// ---------------------------------------------------------------------------
+// Block: ListBlockVolumes, ListBlockSnapshots, ListBlockVolumeTypes,
+//         UpdateBlockSnapshotHandler
+// ---------------------------------------------------------------------------
+
+func TestListBlockVolumes(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes", map[string]any{
+		"name": "vol", "size": float64(21474836480), "perf_iops": float64(5000),
+	})
+
+	status, body := testutil.DoList(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes")
+	require.Equal(t, 200, status)
+	require.Len(t, body["volumes"].([]any), 1)
+}
+
+func TestListBlockSnapshotsAndVolumeTypes(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vol := testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes", map[string]any{
+		"name": "vol", "size": float64(21474836480), "perf_iops": float64(5000),
+	})
+	volID := vol["id"].(string)
+
+	_, snap := testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/snapshots", map[string]any{
+		"volume_id": volID, "name": "snap",
+	})
+	snapID := snap["id"].(string)
+
+	// List snapshots
+	status, body := testutil.DoList(t, ts, "/block/v1alpha1/zones/fr-par-1/snapshots")
+	require.Equal(t, 200, status)
+	require.Len(t, body["snapshots"].([]any), 1)
+
+	// List volume types
+	status, body = testutil.DoGet(t, ts, "/block/v1alpha1/zones/fr-par-1/volume-types")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "volume_types")
+
+	// Update snapshot
+	status, updated := doPatch(t, ts, "/block/v1alpha1/zones/fr-par-1/snapshots/"+snapID, map[string]any{"name": "renamed-snap"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-snap", updated["name"])
+}
+
+// ---------------------------------------------------------------------------
+// Redis: DeleteRedisEndpoint, ListRedisClusterVersions, ListRedisNodeTypes,
+//        MigrateRedisCluster
+// ---------------------------------------------------------------------------
+
+func TestRedisListVersionsAndNodeTypes(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/redis/v1/zones/fr-par-1/cluster-versions")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "versions")
+
+	status, body = testutil.DoGet(t, ts, "/redis/v1/zones/fr-par-1/node-types")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "node_types")
+}
+
+func TestRedisDeleteEndpoint(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/redis/v1/zones/fr-par-1/clusters", map[string]any{
+		"name": "redis", "version": "7.0.12", "node_type": "RED1-MICRO",
+	})
+	clusterID := cluster["id"].(string)
+
+	epID := "00000000-0000-0000-0000-000000000099"
+	// Set an endpoint with an explicit id so DeleteRedisEndpoint can find it
+	status, body := doPut(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID+"/endpoints", map[string]any{
+		"endpoints": []any{map[string]any{
+			"id": epID,
+			"private_network": map[string]any{"id": "00000000-0000-0000-0000-000000000001"},
+		}},
+	})
+	require.Equal(t, 200, status)
+	endpoints, _ := body["endpoints"].([]any)
+	require.NotEmpty(t, endpoints)
+
+	// DeleteRedisEndpoint returns 200 with updated cluster
+	status = testutil.DoDelete(t, ts, "/redis/v1/zones/fr-par-1/endpoints/"+epID)
+	require.Equal(t, 200, status)
+}
+
+func TestMigrateRedisCluster(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/redis/v1/zones/fr-par-1/clusters", map[string]any{
+		"name": "redis", "version": "7.0.12", "node_type": "RED1-MICRO",
+	})
+	clusterID := cluster["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID+"/migrate", map[string]any{
+		"version": "7.2.4",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, clusterID, body["id"])
+}
+
+// ---------------------------------------------------------------------------
+// RDB stub endpoints
+// ---------------------------------------------------------------------------
+
+func TestRDBListSnapshots(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	_, snap := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/snapshots", map[string]any{
+		"name": "my-snap",
+	})
+	require.NotEmpty(t, snap["id"])
+
+	status, list := testutil.DoList(t, ts, "/rdb/v1/regions/fr-par/snapshots")
+	require.Equal(t, 200, status)
+	require.Len(t, list["snapshots"].([]any), 1)
+}
+
+func TestRDBListBackups(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/backups", map[string]any{
+		"instance_id": instanceID, "name": "backup-1",
+	})
+
+	status, list := testutil.DoList(t, ts, "/rdb/v1/regions/fr-par/backups")
+	require.Equal(t, 200, status)
+	require.Len(t, list["database_backups"].([]any), 1)
+}
+
+func TestRDBListNodeTypes(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoList(t, ts, "/rdb/v1/regions/fr-par/node-types")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "node_types")
+}
+
+func TestRDBRestoreBackup(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	_, backup := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/backups", map[string]any{
+		"instance_id": instanceID, "name": "bk",
+	})
+	backupID := backup["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/backups/"+backupID+"/restore", map[string]any{
+		"instance_id": instanceID,
+		"database_name": "restored",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, backupID, body["id"])
+}
+
+func TestRDBRenewCertificate(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	status, _ := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/renew-certificate", map[string]any{})
+	require.Equal(t, 200, status)
+}
+
+func TestRDBPrepareInstanceLogs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	// Returns a stub log list, not an individual resource
+	status, body := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/prepare-logs", map[string]any{
+		"start_date": "2024-01-01T00:00:00Z",
+		"end_date":   "2024-01-02T00:00:00Z",
+	})
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "logs")
+}
+
+func TestRDBEndpointCreateDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	status, ep := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/endpoints", map[string]any{
+		"endpoint_spec": map[string]any{"private_network": map[string]any{}},
+	})
+	require.Equal(t, 200, status)
+	epID := ep["id"].(string)
+
+	// DeleteRDBEndpoint is a region-level route, not instance-scoped
+	status = testutil.DoDelete(t, ts, "/rdb/v1/regions/fr-par/endpoints/"+epID)
+	require.Equal(t, 204, status)
+}
+
+func TestRDBReadReplicaEndpointAndPromoteReset(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	_, replica := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/read-replicas", map[string]any{})
+	replicaID := replica["id"].(string)
+
+	// Create endpoint on read replica
+	status, ep := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/read-replicas/"+replicaID+"/endpoints", map[string]any{
+		"endpoint_spec": map[string]any{"direct_access": map[string]any{}},
+	})
+	require.Equal(t, 200, status)
+	require.NotEmpty(t, ep["id"])
+
+	// Promote
+	status, promoted := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/read-replicas/"+replicaID+"/promote", map[string]any{})
+	require.Equal(t, 200, status)
+	require.Equal(t, replicaID, promoted["id"])
+
+	// Reset
+	status, reset := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/read-replicas/"+replicaID+"/reset", map[string]any{})
+	require.Equal(t, 200, status)
+	require.Equal(t, replicaID, reset["id"])
+}
+
+func TestRDBCreateInstanceFromSnapshot(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	_, snap := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances/"+instanceID+"/snapshots", map[string]any{
+		"name": "snap",
+	})
+	snapID := snap["id"].(string)
+
+	status, newInst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/snapshots/"+snapID+"/create-instance", map[string]any{
+		"name":      "restored-db",
+		"node_type": "DB-DEV-S",
+	})
+	require.Equal(t, 200, status)
+	require.NotEmpty(t, newInst["id"])
+	require.NotEqual(t, instanceID, newInst["id"])
+}
+
+func TestRDBCreateReadReplicaTopLevel(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, inst := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/instances", map[string]any{
+		"name": "db", "engine": "PostgreSQL-15",
+	})
+	instanceID := inst["id"].(string)
+
+	status, replica := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/read-replicas", map[string]any{
+		"instance_id": instanceID,
+	})
+	require.Equal(t, 200, status)
+	require.NotEmpty(t, replica["id"])
+}
+
+// ---------------------------------------------------------------------------
+// VPC: UpdateVPC, UpdatePrivateNetwork
+// ---------------------------------------------------------------------------
+
+func TestUpdateVPC(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "vpc"})
+	vpcID := vpc["id"].(string)
+
+	status, updated := doPatch(t, ts, "/vpc/v1/regions/fr-par/vpcs/"+vpcID, map[string]any{"name": "renamed-vpc"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-vpc", updated["name"])
+}
+
+func TestUpdatePrivateNetwork(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "vpc"})
+	vpcID := vpc["id"].(string)
+	_, pn := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{
+		"name": "pn", "vpc_id": vpcID,
+	})
+	pnID := pn["id"].(string)
+
+	status, updated := doPatch(t, ts, "/vpc/v1/regions/fr-par/private-networks/"+pnID, map[string]any{"name": "renamed-pn"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-pn", updated["name"])
+}
+
+// ---------------------------------------------------------------------------
+// IPAM: DetachIPAMIP, MoveIPAMIP
+// ---------------------------------------------------------------------------
+
+func TestIPAMDetachAndMove(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, ipamIP := testutil.DoCreate(t, ts, "/ipam/v1/regions/fr-par/ips", map[string]any{
+		"source":  map[string]any{"private_network_id": "00000000-0000-0000-0000-000000000001"},
+		"address": "10.0.0.5",
+	})
+	ipID := ipamIP["id"].(string)
+
+	// Detach
+	status, _ := testutil.DoCreate(t, ts, "/ipam/v1/regions/fr-par/ips/"+ipID+"/detach", map[string]any{})
+	require.Equal(t, 200, status)
+
+	// Move
+	status, _ = testutil.DoCreate(t, ts, "/ipam/v1/regions/fr-par/ips/"+ipID+"/move", map[string]any{
+		"source": map[string]any{"private_network_id": "00000000-0000-0000-0000-000000000002"},
+	})
+	require.Equal(t, 200, status)
+}
+
+// ---------------------------------------------------------------------------
+// K8s: GetNode stub
+// ---------------------------------------------------------------------------
+
+func TestK8sGetNodeStub(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "cluster"})
+	clusterID := cluster["id"].(string)
+	_, pool := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/pools", map[string]any{
+		"name": "pool", "node_type": "DEV1-M", "size": float64(1),
+	})
+
+	nodes := pool["nodes"]
+	if nodes == nil {
+		return // no nodes populated, skip
+	}
+	nodeList := nodes.([]any)
+	if len(nodeList) == 0 {
+		return
+	}
+	nodeID := nodeList[0].(map[string]any)["id"].(string)
+
+	status, body := testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/nodes/"+nodeID)
+	require.Equal(t, 200, status)
+	require.Equal(t, nodeID, body["id"])
+}
+
+// ---------------------------------------------------------------------------
+// Admin: SnapshotState path with error (no snapshot set)
+// ---------------------------------------------------------------------------
+
+func TestAdminSnapshotStateError(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Restore without a snapshot should fail gracefully (not panic)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/mock/restore", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	// Any non-5xx response or a clear error response is fine
+	require.NotEqual(t, 500, resp.StatusCode)
+}

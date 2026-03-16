@@ -2207,7 +2207,12 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	}
 	var sgIDArg any
 	if sgID != "" {
-		sgIDArg = sgID
+		// Only set the FK column if the security group actually exists.
+		// Avoids a FK constraint violation when the stored security_group object
+		// is a placeholder whose ID was never inserted into instance_security_groups.
+		if _, sgErr := r.GetSecurityGroup(sgID); sgErr == nil {
+			sgIDArg = sgID
+		}
 	}
 	_, err = r.db.Exec(
 		`UPDATE instance_servers SET data = ?, security_group_id = ? WHERE id = ?`,
