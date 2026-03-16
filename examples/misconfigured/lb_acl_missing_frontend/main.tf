@@ -63,10 +63,10 @@ resource "scaleway_lb_frontend" "fe" {
 resource "scaleway_lb_acl" "broken" {
   # Wrong: points at the LB's UUID instead of the frontend's UUID.
   # Both are valid Terraform references — easy to mistype.
-  # frontend_id = scaleway_lb.lb.id
+  frontend_id = scaleway_lb.lb.id
 
   # The correct reference:
-  frontend_id = scaleway_lb_frontend.fe.id
+  # frontend_id = scaleway_lb_frontend.fe.id
 
   name  = "deny-all-acl"
   index = 1
