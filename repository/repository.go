@@ -1416,9 +1416,22 @@ func (r *Repository) CreateCluster(region string, data map[string]any) (map[stri
 			"required_claim":  []any{},
 		}
 	}
-	if _, ok := data["auto_upgrade"]; !ok {
+	// Normalize auto_upgrade: the request SDK uses "enable" but the response SDK
+	// struct (ClusterAutoUpgrade) deserializes from "enabled". Always store "enabled"
+	// so the provider's Read function doesn't see a zero-value bool and detect drift.
+	if au, ok := data["auto_upgrade"]; ok {
+		if auMap, ok := au.(map[string]any); ok {
+			if v, hasEnable := auMap["enable"]; hasEnable {
+				if _, hasEnabled := auMap["enabled"]; !hasEnabled {
+					auMap["enabled"] = v
+				}
+				delete(auMap, "enable")
+			}
+			data["auto_upgrade"] = auMap
+		}
+	} else {
 		data["auto_upgrade"] = map[string]any{
-			"enable":             false,
+			"enabled":            false,
 			"maintenance_window": map[string]any{"day": "any", "start_hour": float64(0)},
 		}
 	}
@@ -3230,6 +3243,16 @@ func (r *Repository) CreateLBRoute(lbID string, data map[string]any) (map[string
 	now := nowRFC3339()
 	data["created_at"] = now
 	data["updated_at"] = now
+	// The provider's setRouteState dereferences route.Match.Sni etc. without a nil
+	// check, so ensure "match" is always present in the stored response.
+	if _, ok := data["match"]; !ok {
+		data["match"] = map[string]any{
+			"sni":              nil,
+			"host_header":      nil,
+			"path_begin":       nil,
+			"match_subdomains": false,
+		}
+	}
 	return r.createSimple("lb_routes", "lb_id", lbID, data)
 }
 
