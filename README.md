@@ -113,13 +113,102 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 
 ## Known Limitations
 
-- **Not a full Scaleway API mock.** Only CRUD operations are implemented. Many API features (placement groups, DNS, object storage/S3, serverless, etc.) are not implemented.
 - **No field validation.** Mockway accepts whatever JSON you send and stores it. It does not validate `commercial_type`, `node_type`, required fields, or value constraints beyond foreign key references.
 - **No pagination.** All list endpoints return all results in a single page. `page`/`per_page` query parameters are ignored.
-- **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses) which is a different problem from the JSON REST API.
-- **IAM rules are policy-scoped.** `GET /iam/v1alpha1/rules?policy_id=<id>` returns rules stored during policy create. Rules sent inline in `POST /iam/v1alpha1/policies` are persisted. `GET /iam/v1alpha1/rules` without a `policy_id` always returns an empty list.
+- **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses).
+- **IAM rules are policy-scoped.** `GET /iam/v1alpha1/rules?policy_id=<id>` returns rules stored during policy create. `GET /iam/v1alpha1/rules` without a `policy_id` always returns an empty list.
 - **User data is discarded.** `PATCH /servers/{id}/user_data/{key}` accepts the body but does not store it. `GET /servers/{id}/user_data` always returns an empty list.
 - **Unimplemented routes return 501.** Any route not explicitly handled returns `501 Not Implemented` with a log line — useful for discovering which endpoints your Terraform config needs.
+
+## Not Implemented
+
+`spec_diff.py` tracks all gaps against downloaded Scaleway OpenAPI specs. Run `python3 scripts/spec_diff.py --all` to see the current list. As of this writing there are **155 unimplemented endpoints** across 8 services. The table below documents what is and isn't covered per Terraform resource, so you know before you run.
+
+### Instance
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_instance_server` | ✅ full CRUD + actions | — |
+| `scaleway_instance_ip` | ✅ full CRUD | — |
+| `scaleway_instance_security_group` | ✅ full CRUD + rules | — |
+| `scaleway_instance_private_nic` | ✅ full CRUD | — |
+| `scaleway_instance_volume` | ✅ full CRUD | — |
+| `scaleway_instance_image` | ❌ not implemented | `POST/GET/PATCH/DELETE /images` |
+| `scaleway_instance_snapshot` | ❌ not implemented | `POST/GET/PATCH/DELETE /snapshots` |
+| `scaleway_instance_placement_group` | ❌ not implemented | `POST/GET/PATCH/DELETE /placement_groups` |
+
+Hot-plug operations (`attach-volume`, `detach-volume`) are also not implemented — standalone volumes can be created and destroyed but not dynamically attached to running servers.
+
+### Kubernetes
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_k8s_cluster` | ✅ CRUD + upgrade + set-type | K8s API server ACL rules (`/acls`) not implemented |
+| `scaleway_k8s_pool` | ✅ CRUD + upgrade | pool labels/taints (`set-labels`, `set-taints`) not implemented |
+
+### VPC
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_vpc` | ✅ full CRUD | — |
+| `scaleway_vpc_private_network` | ✅ full CRUD | — |
+| `scaleway_vpc_route` | ❌ not implemented | `POST/GET/PATCH/DELETE /vpc/v2/routes` |
+| `scaleway_vpc_acl` | ❌ not implemented | `GET/PUT /vpc/v2/vpcs/{id}/acl-rules` |
+
+### Redis
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_redis_cluster` | ✅ full CRUD | — |
+| `scaleway_redis_cluster` with ACLs | ❌ partial | `POST/GET/DELETE /redis/v1/acls` not implemented |
+
+### RDB
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_rdb_instance` | ✅ full CRUD | — |
+| `scaleway_rdb_database` | ✅ full CRUD | — |
+| `scaleway_rdb_user` | ✅ full CRUD | — |
+| `scaleway_rdb_acl` | ✅ full CRUD | — |
+| `scaleway_rdb_read_replica` | ✅ CRUD | — |
+
+### Load Balancer
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_lb` | ✅ full CRUD | — |
+| `scaleway_lb_backend` | ✅ full CRUD | — |
+| `scaleway_lb_frontend` | ✅ full CRUD | — |
+| `scaleway_lb_acl` | ✅ full CRUD | — |
+| `scaleway_lb_route` | ✅ full CRUD | — |
+| `scaleway_lb_certificate` | ✅ full CRUD | — |
+| LB subscribers / alerting | ❌ not implemented | `POST/GET /subscribers`, `subscribe/unsubscribe` |
+
+### IAM
+
+| Terraform resource | Status | Gap |
+|---|---|---|
+| `scaleway_iam_application` | ✅ full CRUD | — |
+| `scaleway_iam_api_key` | ✅ full CRUD | — |
+| `scaleway_iam_policy` | ✅ full CRUD + rules | — |
+| `scaleway_iam_ssh_key` | ✅ full CRUD | — |
+| `scaleway_iam_user` | ✅ full CRUD | — |
+| `scaleway_iam_group` | ✅ full CRUD + members | — |
+| IAM organizations / SAML / MFA / JWTs / quotas / logs | ❌ not implemented | Not exposed as Terraform resources |
+
+### Registry, Domain, Block, IPAM, Marketplace
+
+| Service | Status | Gap |
+|---|---|---|
+| `scaleway_registry_namespace` | ✅ full CRUD | — |
+| Registry images / tags | ❌ not implemented | Not Terraform-managed resources |
+| Domain DNS (`scaleway_domain_zone`, `scaleway_domain_record`) | ⚠️ stub | List + patch stubs only; full zone CRUD not implemented |
+| Block storage (`scaleway_block_volume`) | ✅ full CRUD | — |
+| Block snapshots | ✅ full CRUD | — |
+| IPAM (`scaleway_ipam_ip`) | ⚠️ stub | List stub only |
+| Marketplace | ✅ local-image resolution | `/images`, `/versions`, `/categories` catalog not implemented (not needed for Terraform) |
+| Object Storage / S3 | ❌ not implemented | Requires S3 protocol (AWS SigV4) — out of scope |
+| Serverless / Containers / Functions | ❌ not implemented | — |
 
 ## Admin API
 
