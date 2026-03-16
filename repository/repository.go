@@ -1445,6 +1445,17 @@ func (r *Repository) CreateCluster(region string, data map[string]any) (map[stri
 	if _, ok := data["apiserver_cert_sans"]; !ok {
 		data["apiserver_cert_sans"] = []any{}
 	}
+	// The provider calls .String() on these unconditionally in ResourceK8SClusterRead;
+	// missing/null values produce "<nil>" strings causing perpetual drift.
+	if _, ok := data["pod_cidr"]; !ok {
+		data["pod_cidr"] = "100.64.0.0/15"
+	}
+	if _, ok := data["service_cidr"]; !ok {
+		data["service_cidr"] = "10.32.0.0/20"
+	}
+	if _, ok := data["service_dns_ip"]; !ok {
+		data["service_dns_ip"] = "10.32.0.10"
+	}
 	if _, ok := data["tags"]; !ok {
 		data["tags"] = []any{}
 	}

@@ -136,8 +136,8 @@ done
 echo ""
 echo "════════════════════════════════════════"
 echo "Results: ${#PASSED[@]} passed, ${#FAILED[@]} failed"
-for p in "${PASSED[@]}"; do echo "  ✓ ${p}"; done
-for f in "${FAILED[@]}"; do echo "  ✗ ${f}"; done
+for p in "${PASSED[@]+"${PASSED[@]}"}"; do echo "  ✓ ${p}"; done
+for f in "${FAILED[@]+"${FAILED[@]}"}"; do echo "  ✗ ${f}"; done
 echo "════════════════════════════════════════"
 
 [[ ${#FAILED[@]} -eq 0 ]]

@@ -63,7 +63,7 @@ Each row reflects a verified `apply → plan (no-op) → destroy` cycle against 
 |---------|-----------|---------------------|--------|---------|
 | Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance) |
 | IAM | `/iam/v1alpha1/` | `scaleway_iam_application`, `scaleway_iam_api_key`, `scaleway_iam_policy` (with rules), `scaleway_iam_ssh_key` | ✅ verified | [`examples/working/iam_full`](examples/working/iam_full) |
-| Load Balancer | `/lb/v1/zones/{zone}/` | `scaleway_lb`, `scaleway_lb_backend`, `scaleway_lb_frontend` | ✅ verified | [`examples/working/load_balancer`](examples/working/load_balancer) |
+| Load Balancer | `/lb/v1/zones/{zone}/` | `scaleway_lb`, `scaleway_lb_backend`, `scaleway_lb_frontend`, `scaleway_lb_acl` | ✅ verified | [`examples/working/load_balancer`](examples/working/load_balancer), [`examples/working/lb_with_acl`](examples/working/lb_with_acl) |
 | Kubernetes | `/k8s/v1/regions/{region}/` | `scaleway_k8s_cluster`, `scaleway_k8s_pool` | ✅ verified | [`examples/working/kubernetes_cluster`](examples/working/kubernetes_cluster) |
 | RDB | `/rdb/v1/regions/{region}/` | `scaleway_rdb_instance`, `scaleway_rdb_database`, `scaleway_rdb_user` | ✅ verified | [`examples/working/rdb_instance`](examples/working/rdb_instance) |
 | Redis | `/redis/v1/zones/{zone}/` | `scaleway_redis_cluster` | ✅ verified | [`examples/working/redis_cluster`](examples/working/redis_cluster) |
