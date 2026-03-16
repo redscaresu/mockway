@@ -5967,3 +5967,358 @@ func TestAdminSnapshotStateError(t *testing.T) {
 	// Any non-5xx response or a clear error response is fine
 	require.NotEqual(t, 500, resp.StatusCode)
 }
+
+// ---------------------------------------------------------------------------
+// ServerAction: poweron, poweroff, stop_in_place, reboot, terminate
+// ---------------------------------------------------------------------------
+
+func TestServerActions(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{
+		"name": "action-target", "commercial_type": "DEV1-S", "image": "ubuntu_noble",
+	})
+	serverID := unwrapInstanceResource(server)["id"].(string)
+
+	doAction := func(action string) (int, map[string]any) {
+		return testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/action",
+			map[string]any{"action": action})
+	}
+	getState := func() string {
+		_, body := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+		return body["server"].(map[string]any)["state"].(string)
+	}
+
+	// poweron → running
+	status, body := doAction("poweron")
+	require.Equal(t, 200, status)
+	require.Contains(t, body, "task")
+	require.Equal(t, "running", getState())
+
+	// poweroff → stopped
+	status, _ = doAction("poweroff")
+	require.Equal(t, 200, status)
+	require.Equal(t, "stopped", getState())
+
+	// stop_in_place → stopped_in_place
+	doAction("poweron")
+	status, _ = doAction("stop_in_place")
+	require.Equal(t, 200, status)
+	require.Equal(t, "stopped_in_place", getState())
+
+	// reboot → running
+	status, _ = doAction("reboot")
+	require.Equal(t, 200, status)
+	require.Equal(t, "running", getState())
+
+	// terminate deletes the server
+	status, _ = doAction("terminate")
+	require.Equal(t, 200, status)
+	notFound, _ := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 404, notFound)
+}
+
+// ---------------------------------------------------------------------------
+// GetNode: reverse-lookup a synthesised node UUID
+// ---------------------------------------------------------------------------
+
+func TestGetNodeByID(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{
+		"name": "c", "version": "1.31", "cni": "cilium",
+		"delete_additional_resources": false,
+	})
+	clusterID := cluster["id"].(string)
+
+	_, pool := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/pools", map[string]any{
+		"name": "p", "node_type": "DEV1-M", "size": 2,
+	})
+	poolID := pool["id"].(string)
+	require.NotEmpty(t, poolID)
+
+	// List nodes to get a synthesised node ID.
+	status, body := testutil.DoList(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/nodes")
+	require.Equal(t, 200, status)
+	nodes := body["nodes"].([]any)
+	require.Len(t, nodes, 2)
+
+	nodeID := nodes[0].(map[string]any)["id"].(string)
+
+	// GetNode should resolve the same ID.
+	status, node := testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/nodes/"+nodeID)
+	require.Equal(t, 200, status)
+	require.Equal(t, nodeID, node["id"])
+	require.Equal(t, clusterID, node["cluster_id"])
+	require.Equal(t, "ready", node["status"])
+}
+
+func TestGetNodeNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, _ := testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/nodes/00000000-0000-0000-0000-000000000000")
+	require.Equal(t, 404, status)
+}
+
+// ---------------------------------------------------------------------------
+// 404 error paths: delete/get non-existent resources
+// ---------------------------------------------------------------------------
+
+func TestNotFoundErrorPaths(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	ghost := "00000000-0000-0000-0000-000000000000"
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"GetServer", "GET", "/instance/v1/zones/fr-par-1/servers/" + ghost},
+		{"DeleteServer", "DELETE", "/instance/v1/zones/fr-par-1/servers/" + ghost},
+		{"GetIP", "GET", "/instance/v1/zones/fr-par-1/ips/" + ghost},
+		{"DeleteIP", "DELETE", "/instance/v1/zones/fr-par-1/ips/" + ghost},
+		{"GetSecurityGroup", "GET", "/instance/v1/zones/fr-par-1/security_groups/" + ghost},
+		{"DeleteSecurityGroup", "DELETE", "/instance/v1/zones/fr-par-1/security_groups/" + ghost},
+		{"GetLB", "GET", "/lb/v1/regions/fr-par/lbs/" + ghost},
+		{"DeleteLB", "DELETE", "/lb/v1/regions/fr-par/lbs/" + ghost},
+		{"GetBackend", "GET", "/lb/v1/regions/fr-par/backends/" + ghost},
+		{"DeleteBackend", "DELETE", "/lb/v1/regions/fr-par/backends/" + ghost},
+		{"GetFrontend", "GET", "/lb/v1/regions/fr-par/frontends/" + ghost},
+		{"DeleteFrontend", "DELETE", "/lb/v1/regions/fr-par/frontends/" + ghost},
+		{"GetLBRoute", "GET", "/lb/v1/zones/fr-par-1/routes/" + ghost},
+		{"DeleteLBRoute", "DELETE", "/lb/v1/zones/fr-par-1/routes/" + ghost},
+		{"GetLBACL", "GET", "/lb/v1/zones/fr-par-1/acls/" + ghost},
+		{"DeleteLBACL", "DELETE", "/lb/v1/zones/fr-par-1/acls/" + ghost},
+		{"GetLBCertificate", "GET", "/lb/v1/zones/fr-par-1/certificates/" + ghost},
+		{"DeleteLBCertificate", "DELETE", "/lb/v1/zones/fr-par-1/certificates/" + ghost},
+		{"GetRDBInstance", "GET", "/rdb/v1/regions/fr-par/instances/" + ghost},
+		{"DeleteRDBInstance", "DELETE", "/rdb/v1/regions/fr-par/instances/" + ghost},
+		{"GetRedisCluster", "GET", "/redis/v1/zones/fr-par-1/clusters/" + ghost},
+		{"DeleteRedisCluster", "DELETE", "/redis/v1/zones/fr-par-1/clusters/" + ghost},
+		{"GetVPC", "GET", "/vpc/v1/regions/fr-par/vpcs/" + ghost},
+		{"DeleteVPC", "DELETE", "/vpc/v1/regions/fr-par/vpcs/" + ghost},
+		{"GetPrivateNetwork", "GET", "/vpc/v1/regions/fr-par/private-networks/" + ghost},
+		{"DeletePrivateNetwork", "DELETE", "/vpc/v1/regions/fr-par/private-networks/" + ghost},
+		{"GetK8sCluster", "GET", "/k8s/v1/regions/fr-par/clusters/" + ghost},
+		{"DeleteK8sCluster", "DELETE", "/k8s/v1/regions/fr-par/clusters/" + ghost},
+		{"GetK8sPool", "GET", "/k8s/v1/regions/fr-par/pools/" + ghost},
+		{"DeleteK8sPool", "DELETE", "/k8s/v1/regions/fr-par/pools/" + ghost},
+		{"GetIAMApplication", "GET", "/iam/v1alpha1/applications/" + ghost},
+		{"DeleteIAMApplication", "DELETE", "/iam/v1alpha1/applications/" + ghost},
+		{"GetIAMAPIKey", "GET", "/iam/v1alpha1/api-keys/" + ghost},
+		{"DeleteIAMAPIKey", "DELETE", "/iam/v1alpha1/api-keys/" + ghost},
+		{"GetIAMPolicy", "GET", "/iam/v1alpha1/policies/" + ghost},
+		{"DeleteIAMPolicy", "DELETE", "/iam/v1alpha1/policies/" + ghost},
+		{"GetIAMSSHKey", "GET", "/iam/v1alpha1/ssh-keys/" + ghost},
+		{"DeleteIAMSSHKey", "DELETE", "/iam/v1alpha1/ssh-keys/" + ghost},
+		{"GetRegistryNamespace", "GET", "/registry/v1/regions/fr-par/namespaces/" + ghost},
+		{"DeleteRegistryNamespace", "DELETE", "/registry/v1/regions/fr-par/namespaces/" + ghost},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, ts.URL+tc.path, nil)
+			require.NoError(t, err)
+			req.Header.Set("X-Auth-Token", "test-token")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+			require.Equal(t, 404, resp.StatusCode, "expected 404 for %s %s", tc.method, tc.path)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 400 error paths: invalid JSON body
+// ---------------------------------------------------------------------------
+
+func TestInvalidJSONReturns400(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	badJSON := []byte("{not json}")
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/instance/v1/zones/fr-par-1/servers"},
+		{"PATCH", "/instance/v1/zones/fr-par-1/servers/00000000-0000-0000-0000-000000000000"},
+		{"POST", "/instance/v1/zones/fr-par-1/ips"},
+		{"POST", "/instance/v1/zones/fr-par-1/security_groups"},
+		{"POST", "/lb/v1/regions/fr-par/lbs"},
+		{"POST", "/lb/v1/regions/fr-par/backends"},
+		{"POST", "/lb/v1/regions/fr-par/frontends"},
+		{"POST", "/k8s/v1/regions/fr-par/clusters"},
+		{"POST", "/rdb/v1/regions/fr-par/instances"},
+		{"POST", "/redis/v1/zones/fr-par-1/clusters"},
+		{"POST", "/iam/v1alpha1/applications"},
+		{"POST", "/iam/v1alpha1/api-keys"},
+		{"POST", "/vpc/v1/regions/fr-par/vpcs"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.method+" "+ep.path, func(t *testing.T) {
+			req, err := http.NewRequest(ep.method, ts.URL+ep.path, bytes.NewReader(badJSON))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Auth-Token", "test-token")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			resp.Body.Close()
+			require.Equal(t, 400, resp.StatusCode, "expected 400 for %s %s", ep.method, ep.path)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Delete collision: FK constraint returns 409
+// ---------------------------------------------------------------------------
+
+func TestDeleteWithDependentsReturns409(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a VPC then a private network that references it.
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "v"})
+	vpcID := vpc["id"].(string)
+	testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{
+		"name": "pn", "vpc_id": vpcID,
+	})
+
+	// Deleting the VPC while a private network still references it must return 409.
+	status := testutil.DoDelete(t, ts, "/vpc/v1/regions/fr-par/vpcs/"+vpcID)
+	require.Equal(t, 409, status)
+}
+
+// ---------------------------------------------------------------------------
+// IAM: User and Group CRUD
+// ---------------------------------------------------------------------------
+
+func TestIAMUserCRUD(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, user := testutil.DoCreate(t, ts, "/iam/v1alpha1/users", map[string]any{
+		"email": "alice@example.com",
+	})
+	userID := user["id"].(string)
+
+	status, body := testutil.DoGet(t, ts, "/iam/v1alpha1/users/"+userID)
+	require.Equal(t, 200, status)
+	require.Equal(t, userID, body["id"])
+
+	status, _ = doPatch(t, ts, "/iam/v1alpha1/users/"+userID, map[string]any{"tags": []any{"admin"}})
+	require.Equal(t, 200, status)
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/users/"+userID)
+	require.Equal(t, 204, status)
+
+	notFound, _ := testutil.DoGet(t, ts, "/iam/v1alpha1/users/"+userID)
+	require.Equal(t, 404, notFound)
+}
+
+func TestIAMGroupCRUD(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, group := testutil.DoCreate(t, ts, "/iam/v1alpha1/groups", map[string]any{
+		"name": "ops",
+	})
+	groupID := group["id"].(string)
+
+	status, body := testutil.DoGet(t, ts, "/iam/v1alpha1/groups/"+groupID)
+	require.Equal(t, 200, status)
+	require.Equal(t, groupID, body["id"])
+
+	status, _ = doPatch(t, ts, "/iam/v1alpha1/groups/"+groupID, map[string]any{"name": "ops-updated"})
+	require.Equal(t, 200, status)
+
+	status = testutil.DoDelete(t, ts, "/iam/v1alpha1/groups/"+groupID)
+	require.Equal(t, 204, status)
+}
+
+// ---------------------------------------------------------------------------
+// Block: update and delete volume/snapshot
+// ---------------------------------------------------------------------------
+
+func TestBlockVolumeUpdateDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vol := testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes", map[string]any{
+		"name": "vol", "size": float64(21474836480), "perf_iops": float64(5000),
+	})
+	volID := vol["id"].(string)
+
+	status, updated := doPatch(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes/"+volID, map[string]any{
+		"name": "vol-renamed",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "vol-renamed", updated["name"])
+
+	status = testutil.DoDelete(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes/"+volID)
+	require.Equal(t, 204, status)
+
+	notFound, _ := testutil.DoGet(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes/"+volID)
+	require.Equal(t, 404, notFound)
+}
+
+func TestBlockSnapshotDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, vol := testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/volumes", map[string]any{
+		"name": "vol", "size": float64(21474836480), "perf_iops": float64(5000),
+	})
+	volID := vol["id"].(string)
+
+	_, snap := testutil.DoCreate(t, ts, "/block/v1alpha1/zones/fr-par-1/snapshots", map[string]any{
+		"volume_id": volID, "name": "snap",
+	})
+	snapID := snap["id"].(string)
+
+	status := testutil.DoDelete(t, ts, "/block/v1alpha1/zones/fr-par-1/snapshots/"+snapID)
+	require.Equal(t, 204, status)
+}
+
+// ---------------------------------------------------------------------------
+// Repository FK cascade: private NIC cascades when server is deleted
+// ---------------------------------------------------------------------------
+
+func TestPrivateNICCascadeOnServerDelete(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create VPC + private network.
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/vpcs", map[string]any{"name": "v"})
+	vpcID := vpc["id"].(string)
+	_, pn := testutil.DoCreate(t, ts, "/vpc/v1/regions/fr-par/private-networks", map[string]any{
+		"name": "pn", "vpc_id": vpcID,
+	})
+	pnID := pn["id"].(string)
+
+	// Create a server, attach a NIC.
+	_, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers", map[string]any{
+		"name": "srv", "commercial_type": "DEV1-S", "image": "ubuntu_noble",
+	})
+	serverID := unwrapInstanceResource(server)["id"].(string)
+
+	_, nic := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics", map[string]any{
+		"private_network_id": pnID,
+	})
+	nicID := nic["private_nic"].(map[string]any)["id"].(string)
+
+	// Delete the server — NIC should cascade-delete.
+	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
+	require.Equal(t, 204, status)
+
+	// NIC lookup should now 404.
+	status, _ = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics/"+nicID)
+	require.Equal(t, 404, status)
+}
