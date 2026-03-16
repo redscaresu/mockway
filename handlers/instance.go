@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/redscaresu/mockway/models"
 )
 
 func (app *Application) ListProductsServers(w http.ResponseWriter, _ *http.Request) {
@@ -329,8 +331,51 @@ func (app *Application) GetVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"volume": out})
 }
 
-func (app *Application) DeleteVolume(w http.ResponseWriter, _ *http.Request) {
+func (app *Application) DeleteVolume(w http.ResponseWriter, r *http.Request) {
+	// Standalone volumes can be deleted; embedded server volumes are no-op.
+	id := chi.URLParam(r, "volume_id")
+	if err := app.repo.DeleteStandaloneVolume(id); err != nil && !errors.Is(err, models.ErrNotFound) {
+		writeDomainError(w, err)
+		return
+	}
 	writeNoContent(w)
+}
+
+func (app *Application) CreateVolume(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.CreateInstanceVolume(chi.URLParam(r, "zone"), body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"volume": out})
+}
+
+func (app *Application) ListVolumes(w http.ResponseWriter, r *http.Request) {
+	items, err := app.repo.ListInstanceVolumes(chi.URLParam(r, "zone"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeList(w, "volumes", items)
+}
+
+func (app *Application) PatchVolume(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	out, err := app.repo.UpdateInstanceVolume(chi.URLParam(r, "volume_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"volume": out})
 }
 
 func (app *Application) ListServers(w http.ResponseWriter, r *http.Request) {

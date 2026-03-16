@@ -43,7 +43,10 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/servers/{server_id}", app.GetServer)
 			r.Patch("/servers/{server_id}", app.UpdateServer)
 			r.Post("/servers/{server_id}/action", app.ServerAction)
+			r.Post("/volumes", app.CreateVolume)
+			r.Get("/volumes", app.ListVolumes)
 			r.Get("/volumes/{volume_id}", app.GetVolume)
+			r.Patch("/volumes/{volume_id}", app.PatchVolume)
 			r.Delete("/volumes/{volume_id}", app.DeleteVolume)
 			r.Get("/servers/{server_id}/user_data", app.ListServerUserData)
 			r.Get("/servers/{server_id}/user_data/{key}", app.GetServerUserDataKey)
@@ -221,6 +224,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 
 		r.Route("/k8s/v1/regions/{region}", func(r chi.Router) {
 			r.Get("/versions", app.ListK8sVersions)
+			r.Get("/versions/{version_name}", app.GetK8sVersion)
 
 			r.Post("/clusters", app.CreateCluster)
 			r.Get("/clusters", app.ListClusters)
@@ -228,12 +232,15 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/clusters/{cluster_id}/kubeconfig", app.GetClusterKubeconfig)
 			r.Get("/clusters/{cluster_id}/nodes", app.ListClusterNodes)
 			r.Patch("/clusters/{cluster_id}", app.UpdateCluster)
+			r.Post("/clusters/{cluster_id}/upgrade", app.UpgradeCluster)
+			r.Post("/clusters/{cluster_id}/set-type", app.SetClusterType)
 			r.Delete("/clusters/{cluster_id}", app.DeleteCluster)
 
 			r.Post("/clusters/{cluster_id}/pools", app.CreatePool)
 			r.Get("/clusters/{cluster_id}/pools", app.ListPools)
 			r.Get("/pools/{pool_id}", app.GetPool)
 			r.Patch("/pools/{pool_id}", app.UpdatePool)
+			r.Post("/pools/{pool_id}/upgrade", app.UpgradePool)
 			r.Delete("/pools/{pool_id}", app.DeletePool)
 
 			r.Get("/nodes/{node_id}", app.GetNode)

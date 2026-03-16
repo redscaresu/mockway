@@ -61,10 +61,10 @@ Each row reflects a verified `apply → plan (no-op) → destroy` cycle against 
 
 | Service | API prefix | Terraform resources | Status | Example |
 |---------|-----------|---------------------|--------|---------|
-| Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance) |
+| Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic`, `scaleway_instance_volume` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance) |
 | IAM | `/iam/v1alpha1/` | `scaleway_iam_application`, `scaleway_iam_api_key`, `scaleway_iam_policy` (with rules), `scaleway_iam_ssh_key` | ✅ verified | [`examples/working/iam_full`](examples/working/iam_full) |
 | Load Balancer | `/lb/v1/zones/{zone}/` | `scaleway_lb`, `scaleway_lb_backend`, `scaleway_lb_frontend`, `scaleway_lb_acl`, `scaleway_lb_route` | ✅ verified | [`examples/working/load_balancer`](examples/working/load_balancer), [`examples/working/lb_with_acl`](examples/working/lb_with_acl), [`examples/working/lb_with_route`](examples/working/lb_with_route) |
-| Kubernetes | `/k8s/v1/regions/{region}/` | `scaleway_k8s_cluster` (with auto-upgrade), `scaleway_k8s_pool` | ✅ verified | [`examples/working/kubernetes_cluster`](examples/working/kubernetes_cluster), [`examples/working/k8s_with_auto_upgrade`](examples/working/k8s_with_auto_upgrade) |
+| Kubernetes | `/k8s/v1/regions/{region}/` | `scaleway_k8s_cluster` (with auto-upgrade, version upgrade), `scaleway_k8s_pool` | ✅ verified | [`examples/working/kubernetes_cluster`](examples/working/kubernetes_cluster), [`examples/working/k8s_with_auto_upgrade`](examples/working/k8s_with_auto_upgrade) |
 | RDB | `/rdb/v1/regions/{region}/` | `scaleway_rdb_instance`, `scaleway_rdb_database`, `scaleway_rdb_user` | ✅ verified | [`examples/working/rdb_instance`](examples/working/rdb_instance) |
 | Redis | `/redis/v1/zones/{zone}/` | `scaleway_redis_cluster` | ✅ verified | [`examples/working/redis_cluster`](examples/working/redis_cluster) |
 | Registry | `/registry/v1/regions/{region}/` | `scaleway_registry_namespace` | ✅ verified | [`examples/working/registry_namespace`](examples/working/registry_namespace) |
@@ -113,7 +113,7 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 
 ## Known Limitations
 
-- **Not a full Scaleway API mock.** Only CRUD operations are implemented. Update/patch operations are limited (security groups only). Many API features (snapshots, placement groups, DNS, object storage/S3, block storage, serverless, etc.) are not implemented.
+- **Not a full Scaleway API mock.** Only CRUD operations are implemented. Many API features (placement groups, DNS, object storage/S3, serverless, etc.) are not implemented.
 - **No field validation.** Mockway accepts whatever JSON you send and stores it. It does not validate `commercial_type`, `node_type`, required fields, or value constraints beyond foreign key references.
 - **No pagination.** All list endpoints return all results in a single page. `page`/`per_page` query parameters are ignored.
 - **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses) which is a different problem from the JSON REST API.

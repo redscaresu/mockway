@@ -6322,3 +6322,124 @@ func TestPrivateNICCascadeOnServerDelete(t *testing.T) {
 	status, _ = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics/"+nicID)
 	require.Equal(t, 404, status)
 }
+
+// ---------------------------------------------------------------------------
+// MW-22: Standalone instance volumes
+// ---------------------------------------------------------------------------
+
+func TestInstanceVolumeLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a standalone volume.
+	status, body := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/volumes", map[string]any{
+		"name": "my-vol", "size": float64(20000000000), "volume_type": "l_ssd",
+	})
+	require.Equal(t, 200, status)
+	vol := body["volume"].(map[string]any)
+	volID := vol["id"].(string)
+	require.Equal(t, "my-vol", vol["name"])
+	require.Equal(t, "available", vol["state"])
+	require.Nil(t, vol["server"])
+
+	// Get it back.
+	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volID)
+	require.Equal(t, 200, status)
+	require.Equal(t, volID, body["volume"].(map[string]any)["id"])
+
+	// List — should appear.
+	status, body = testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/volumes")
+	require.Equal(t, 200, status)
+	require.Len(t, body["volumes"].([]any), 1)
+
+	// Patch name.
+	status, body = doPatch(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volID, map[string]any{
+		"name": "renamed-vol",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "renamed-vol", body["volume"].(map[string]any)["name"])
+
+	// Delete.
+	status = testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volID)
+	require.Equal(t, 204, status)
+
+	// Gone.
+	status, _ = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+volID)
+	require.Equal(t, 404, status)
+}
+
+// ---------------------------------------------------------------------------
+// MW-18: K8s upgrade / version endpoints
+// ---------------------------------------------------------------------------
+
+func TestK8sUpgradeCluster(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{
+		"name": "c", "version": "1.30", "cni": "cilium",
+		"delete_additional_resources": false,
+	})
+	clusterID := cluster["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/upgrade",
+		map[string]any{"version": "1.31"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "1.31", body["version"])
+	require.Equal(t, clusterID, body["id"])
+}
+
+func TestK8sUpgradePool(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{
+		"name": "c", "version": "1.30", "cni": "cilium",
+		"delete_additional_resources": false,
+	})
+	clusterID := cluster["id"].(string)
+
+	_, pool := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/pools", map[string]any{
+		"name": "p", "node_type": "DEV1-M", "size": 1,
+	})
+	poolID := pool["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/pools/"+poolID+"/upgrade",
+		map[string]any{"version": "1.31"})
+	require.Equal(t, 200, status)
+	require.Equal(t, "1.31", body["version"])
+}
+
+func TestK8sSetClusterType(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{
+		"name": "c", "version": "1.31", "cni": "cilium",
+		"delete_additional_resources": false,
+	})
+	clusterID := cluster["id"].(string)
+
+	status, body := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+clusterID+"/set-type",
+		map[string]any{"type": "kapsule-dedicated-8"})
+	require.Equal(t, 200, status)
+	require.Equal(t, clusterID, body["id"])
+}
+
+func TestK8sGetVersion(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/versions/1.31.2")
+	require.Equal(t, 200, status)
+	require.Equal(t, "1.31.2", body["name"])
+
+	// Minor version alias also works.
+	status, body = testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/versions/1.31")
+	require.Equal(t, 200, status)
+	require.Equal(t, "1.31", body["name"])
+
+	// Unknown version returns 404.
+	status, _ = testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/versions/9.99")
+	require.Equal(t, 404, status)
+}

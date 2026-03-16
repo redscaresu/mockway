@@ -241,6 +241,11 @@ func (r *Repository) init() error {
 			user_id TEXT NOT NULL REFERENCES iam_users(id) ON DELETE CASCADE,
 			PRIMARY KEY (group_id, user_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS instance_volumes (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS block_volumes (
 			id TEXT PRIMARY KEY,
 			zone TEXT NOT NULL,
@@ -978,6 +983,11 @@ func (r *Repository) DeleteInstanceVolume(zone, volumeID string) error {
 }
 
 func (r *Repository) GetInstanceVolume(zone, volumeID string) (map[string]any, error) {
+	// Check standalone volumes first.
+	if vol, err := r.getJSONByID("instance_volumes", "id", volumeID); err == nil {
+		return vol, nil
+	}
+	// Fall back to volumes embedded inside server JSON.
 	servers, err := r.listJSON("instance_servers", "zone", zone)
 	if err != nil {
 		return nil, err
@@ -1000,6 +1010,53 @@ func (r *Repository) GetInstanceVolume(zone, volumeID string) (map[string]any, e
 		}
 	}
 	return nil, models.ErrNotFound
+}
+
+func (r *Repository) CreateInstanceVolume(zone string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["zone"] = zone
+	data["state"] = "available"
+	data["creation_date"] = now
+	data["modification_date"] = now
+	if _, ok := data["volume_type"]; !ok {
+		data["volume_type"] = "l_ssd"
+	}
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	// The provider reads server as null when a volume is not attached.
+	if _, ok := data["server"]; !ok {
+		data["server"] = nil
+	}
+	return r.createSimple("instance_volumes", "zone", zone, data)
+}
+
+func (r *Repository) ListInstanceVolumes(zone string) ([]map[string]any, error) {
+	return r.listJSON("instance_volumes", "zone", zone)
+}
+
+func (r *Repository) UpdateInstanceVolume(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_volumes", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if k == "id" {
+			continue
+		}
+		next[k] = v
+	}
+	next["modification_date"] = nowRFC3339()
+	if err := r.updateJSONByID("instance_volumes", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteStandaloneVolume(id string) error {
+	return r.deleteBy("instance_volumes", "id = ?", id)
 }
 
 func (r *Repository) detachIPsFromServerTx(tx *sql.Tx, serverID string) error {

@@ -38,11 +38,11 @@ The security-group drift fix is the template for this class of bug: the Terrafor
 | MW-16 | Spec audit: compare every mockway-implemented endpoint against the downloaded Scaleway OpenAPI specs in `specs/`; for each endpoint check response shape, cascade behaviour on DELETE, required fields, and correctness of FK semantics | P1 | done | MW-15 |
 | MW-15 | Systematic FK audit: map every parent-child reference across all services, write one negative e2e test per relationship (bad UUID → assert 404), fix every handler gap found | P1 | done | MW-11 |
 | MW-9 | Misconfigured examples: FK violations for LB, K8s, RDB | P3 | done | MW-3, MW-4, MW-5 |
-| MW-18 | K8s cluster upgrade/set-type/ACLs/GetVersion (provider calls these on version change) | P2 | todo | — |
+| MW-18 | K8s cluster upgrade/set-type/GetVersion, pool upgrade (provider calls these on version change) — K8s ACLs still todo | P2 | done | — |
 | MW-19 | Marketplace ListImages/GetImage/ListVersions/GetVersion (provider uses to resolve image IDs) | P2 | todo | — |
 | MW-20 | VPC routes and ACL rules | P2 | todo | — |
 | MW-21 | Domain DNS zone CRUD (CreateDNSZone, UpdateDNSZone, DeleteDNSZone) | P2 | todo | — |
-| MW-22 | Instance placement groups, images, snapshots, standalone volumes | P2 | todo | — |
+| MW-22 | Instance standalone volumes (`scaleway_instance_volume`) — POST/GET/LIST/PATCH/DELETE `/volumes` | P2 | done | — |
 | MW-10 | Document `--echo` mode in README | P3 | done | — |
 | MW-1 | Shell script idempotency harness over `examples/` dirs (manual debugging aid only — MW-11 covers CI) | P3 | done | MW-2 |
 

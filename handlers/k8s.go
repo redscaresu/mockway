@@ -275,3 +275,89 @@ func (app *Application) DeletePool(w http.ResponseWriter, r *http.Request) {
 	out["status"] = "deleting"
 	writeJSON(w, http.StatusOK, out)
 }
+
+// GetK8sVersion handles GET /versions/{version_name}.
+// Returns the static version object matching the name, or 404.
+func (app *Application) GetK8sVersion(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "version_name")
+	versions := []map[string]any{
+		{"name": "1.31.2", "label": "Kubernetes 1.31.2"},
+		{"name": "1.31", "label": "Kubernetes 1.31"},
+		{"name": "1.30.6", "label": "Kubernetes 1.30.6"},
+		{"name": "1.30", "label": "Kubernetes 1.30"},
+		{"name": "1.29.10", "label": "Kubernetes 1.29.10"},
+		{"name": "1.29", "label": "Kubernetes 1.29"},
+		{"name": "1.28.15", "label": "Kubernetes 1.28.15"},
+		{"name": "1.28", "label": "Kubernetes 1.28"},
+	}
+	for _, v := range versions {
+		if v["name"] == name {
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{"message": "resource not found", "type": "not_found"})
+}
+
+// UpgradeCluster handles POST /clusters/{cluster_id}/upgrade.
+// Updates the cluster version and returns the updated cluster.
+func (app *Application) UpgradeCluster(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	clusterID := chi.URLParam(r, "cluster_id")
+	patch := map[string]any{}
+	if v, ok := body["version"].(string); ok && v != "" {
+		patch["version"] = v
+	}
+	out, err := app.repo.UpdateCluster(clusterID, patch)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// UpgradePool handles POST /pools/{pool_id}/upgrade.
+// Updates the pool version and returns the updated pool.
+func (app *Application) UpgradePool(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	poolID := chi.URLParam(r, "pool_id")
+	patch := map[string]any{}
+	if v, ok := body["version"].(string); ok && v != "" {
+		patch["version"] = v
+	}
+	out, err := app.repo.UpdatePool(poolID, patch)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// SetClusterType handles POST /clusters/{cluster_id}/set-type.
+// Updates the cluster offer_type and returns the updated cluster.
+func (app *Application) SetClusterType(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	clusterID := chi.URLParam(r, "cluster_id")
+	patch := map[string]any{}
+	if t, ok := body["type"].(string); ok && t != "" {
+		patch["type"] = t
+	}
+	out, err := app.repo.UpdateCluster(clusterID, patch)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
