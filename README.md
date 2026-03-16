@@ -88,7 +88,7 @@ Common forms:
 - Wrong resource referenced — autocomplete picks the parent when the child was intended (`scaleway_lb.lb.id` instead of `scaleway_lb_backend.backend.id` — both are UUIDs)
 - Missing resource entirely — a child resource is defined but its parent was never added to the config
 
-Examples: [`misconfigured/app_stack_db_ref`](examples/misconfigured/app_stack_db_ref), [`misconfigured/lb_missing_backend`](examples/misconfigured/lb_missing_backend), [`misconfigured/nic_with_missing_private_network`](examples/misconfigured/nic_with_missing_private_network)
+Examples: [`misconfigured/app_stack_db_ref`](examples/misconfigured/app_stack_db_ref), [`misconfigured/lb_missing_backend`](examples/misconfigured/lb_missing_backend), [`misconfigured/nic_with_missing_private_network`](examples/misconfigured/nic_with_missing_private_network), [`misconfigured/security_group_name_not_id`](examples/misconfigured/security_group_name_not_id)
 
 **2. Wrong destroy order** — a parent resource is deleted while children still hold FK references to it. A full `terraform destroy` is safe because Terraform reads the dependency graph and destroys in the right order. The failure only appears with `-target` destroys or multi-workspace teardowns where Terraform can't see the full graph.
 
@@ -201,7 +201,14 @@ To manually verify the working examples end-to-end (apply → no-op plan → des
 ./scripts/test-examples.sh load_balancer    # specific dir by name
 ```
 
-The script starts mockway on a random free port, resets state between runs, and reports pass/fail per directory. This is a manual debugging aid; the authoritative CI test is `go test -tags provider_e2e ./e2e`.
+To verify the misconfigured examples fail with the expected error (404/409) rather than a provider panic:
+
+```bash
+./scripts/test-misconfigured.sh                        # all examples/misconfigured/* dirs
+./scripts/test-misconfigured.sh lb_acl_missing_frontend  # specific example
+```
+
+Both scripts start mockway on a random free port, reset state between runs, and report pass/fail per directory. These are manual debugging aids; the authoritative CI test is `go test -tags provider_e2e ./e2e`.
 
 Key packages:
 

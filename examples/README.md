@@ -120,18 +120,18 @@ Three categories of failure are represented:
 
 | Example | The mistake | What mockway returns |
 |---|---|---|
-| `misconfigured/hardcoded_security_group_id` | `security_group_id` is a literal UUID that does not exist in mockway's state | `404` at server create |
+| `misconfigured/security_group_name_not_id` | `security_group_id = sg.name` — uses the name string where the UUID `.id` is required; both are valid strings | `404` at server create |
 | `misconfigured/nic_with_missing_private_network` | `private_network_id` is a stale UUID — the private network was never created | `404` at NIC create, after the server already applied |
 | `misconfigured/lb_missing_backend` | `backend_id` points at `scaleway_lb.lb.id` instead of `scaleway_lb_backend.backend.id` — wrong resource, both are UUIDs | `404` at frontend create |
+| `misconfigured/lb_acl_missing_frontend` | `frontend_id` points at `scaleway_lb.lb.id` instead of `scaleway_lb_frontend.fe.id` — both are UUIDs | `404` at ACL create |
 | `misconfigured/k8s_pool_missing_cluster` | `cluster_id` is a literal UUID; no cluster with that ID was created | `404` at pool create |
-| `misconfigured/rdb_child_before_parent` | `instance_id` is a literal UUID; no RDB instance with that ID exists | `404` at database create |
 | `misconfigured/app_stack_db_ref` | 12-resource stack (IAM + Instance + LB + RDB); `scaleway_rdb_database` uses `.name` instead of `.id` for `instance_id` — 11 resources apply before the failure | `404` at database create |
 
 **Wrong destroy order** — a parent resource is deleted while children still hold references to it.
 
 | Example | The mistake | What mockway returns |
 |---|---|---|
-| `misconfigured/vpc_deleted_before_private_network` | Run `terraform destroy -target scaleway_vpc.vpc` while the private network still exists | `409 cannot delete: dependents exist` |
+| `misconfigured/vpc_deleted_before_private_network` | Two workspaces: `vpc/` creates a VPC, `pn/` creates a private network referencing it. Destroying `vpc/` while `pn/` is still applied fails. | `409 cannot delete: dependents exist` |
 
 **Cross-state orphan** — a resource in one Terraform state file references a resource in another; standard tooling cannot see across state files.
 
