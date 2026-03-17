@@ -2457,6 +2457,11 @@ func TestDNSRecordPatchAndList(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
+	// Create the zone first so records can be patched.
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain": "example.com", "subdomain": "",
+	})
+
 	// Initially empty.
 	status, body := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones/example.com/records")
 	require.Equal(t, 200, status)
@@ -3880,6 +3885,10 @@ func TestDomainRecordPatchSetChangeType(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain": "example.com", "subdomain": "",
+	})
+
 	// Add a record.
 	status, body := doPatch(t, ts, "/domain/v2beta1/dns-zones/example.com/records", map[string]any{
 		"changes": []any{
@@ -3920,6 +3929,10 @@ func TestDomainRecordPatchSetChangeType(t *testing.T) {
 func TestDomainRecordPatchMultipleChanges(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
+
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain": "example.com", "subdomain": "",
+	})
 
 	// Add two records in one PATCH.
 	status, body := doPatch(t, ts, "/domain/v2beta1/dns-zones/example.com/records", map[string]any{
@@ -4334,6 +4347,9 @@ func TestResetClearsAllNewServices(t *testing.T) {
 	})
 	testutil.DoCreate(t, ts, "/registry/v1/regions/fr-par/namespaces", map[string]any{
 		"name": "ns1",
+	})
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain": "example.com", "subdomain": "",
 	})
 	doPatch(t, ts, "/domain/v2beta1/dns-zones/example.com/records", map[string]any{
 		"changes": []any{

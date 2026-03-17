@@ -468,6 +468,7 @@ func (r *Repository) Reset() error {
 		"rdb_backups",
 		"rdb_snapshots",
 		"rdb_read_replicas",
+		"instance_volumes",
 		"marketplace_labels",
 		"rdb_acls",
 		"rdb_privileges",
@@ -2314,6 +2315,10 @@ func (r *Repository) DeleteDNSZone(dnsZone string) error {
 }
 
 func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[string]any, error) {
+	// Verify the DNS zone exists before modifying records.
+	if _, err := r.GetDNSZone(dnsZone); err != nil {
+		return nil, err
+	}
 	for _, raw := range changes {
 		change, ok := raw.(map[string]any)
 		if !ok {

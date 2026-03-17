@@ -362,7 +362,7 @@ func (app *Application) CreateRDBReadReplicaEndpoint(w http.ResponseWriter, r *h
 	}
 	out, err := app.repo.CreateRDBReadReplicaEndpoint(chi.URLParam(r, "read_replica_id"), body)
 	if err != nil {
-		writeDomainError(w, err)
+		writeCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -550,9 +550,10 @@ func (app *Application) RenewRDBCertificate(w http.ResponseWriter, r *http.Reque
 		writeDomainError(w, err)
 		return
 	}
+	pem := "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n"
 	writeJSON(w, http.StatusOK, map[string]any{
 		"certificate": map[string]any{
-			"content": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJALHMPMCJ+OebMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBm1v\nY2t3YTAeFw0yNDAyMjQwMDAwMDBaFw0zNDAyMjQwMDAwMDBaMBExDzANBgNVBAMM\nBm1vY2t3YTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o35FHQOGT7Pmb+oCaFHh\nOBAAPHlNmjNKHEl2hdNRMNwIDAQABMA0GCSqGSIb3DQEBCwUAA0EA\n-----END CERTIFICATE-----\n",
+			"content": base64.StdEncoding.EncodeToString([]byte(pem)),
 		},
 	})
 }
@@ -569,7 +570,7 @@ func (app *Application) CreateRDBEndpoint(w http.ResponseWriter, r *http.Request
 	}
 	out, err := app.repo.CreateRDBEndpoint(chi.URLParam(r, "instance_id"), body)
 	if err != nil {
-		writeDomainError(w, err)
+		writeCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
