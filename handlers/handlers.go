@@ -99,6 +99,26 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/private-networks/{pn_id}", app.GetPrivateNetwork)
 			r.Patch("/private-networks/{pn_id}", app.UpdatePrivateNetwork)
 			r.Delete("/private-networks/{pn_id}", app.DeletePrivateNetwork)
+
+			r.Post("/routes", app.CreateVPCRoute)
+			r.Get("/routes", app.ListVPCRoutes)
+			r.Get("/routes/{route_id}", app.GetVPCRoute)
+			r.Patch("/routes/{route_id}", app.UpdateVPCRoute)
+			r.Delete("/routes/{route_id}", app.DeleteVPCRoute)
+		})
+
+		r.Route("/vpc-gw/v2/zones/{zone}", func(r chi.Router) {
+			r.Post("/gateways", app.CreateVPCPublicGateway)
+			r.Get("/gateways", app.ListVPCPublicGateways)
+			r.Get("/gateways/{gateway_id}", app.GetVPCPublicGateway)
+			r.Patch("/gateways/{gateway_id}", app.UpdateVPCPublicGateway)
+			r.Delete("/gateways/{gateway_id}", app.DeleteVPCPublicGateway)
+
+			r.Post("/gateway-networks", app.CreateVPCGatewayNetwork)
+			r.Get("/gateway-networks", app.ListVPCGatewayNetworks)
+			r.Get("/gateway-networks/{gateway_network_id}", app.GetVPCGatewayNetwork)
+			r.Patch("/gateway-networks/{gateway_network_id}", app.UpdateVPCGatewayNetwork)
+			r.Delete("/gateway-networks/{gateway_network_id}", app.DeleteVPCGatewayNetwork)
 		})
 
 		r.Route("/lb/v1/zones/{zone}", func(r chi.Router) {
@@ -395,10 +415,13 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/ips/{ip_id}/move", app.MoveIPAMIP)
 		})
 
-		r.Get("/domain/v2beta1/dns-zones", app.ListDNSZones)
-		r.Route("/domain/v2beta1/dns-zones/{dns_zone}", func(r chi.Router) {
-			r.Patch("/records", app.PatchDomainRecords)
-			r.Get("/records", app.ListDomainRecords)
+		r.Route("/domain/v2beta1", func(r chi.Router) {
+			r.Post("/dns-zones", app.CreateDNSZone)
+			r.Get("/dns-zones", app.ListDNSZones)
+			r.Patch("/dns-zones/{dns_zone}", app.UpdateDNSZone)
+			r.Delete("/dns-zones/{dns_zone}", app.DeleteDNSZone)
+			r.Patch("/dns-zones/{dns_zone}/records", app.PatchDomainRecords)
+			r.Get("/dns-zones/{dns_zone}/records", app.ListDomainRecords)
 		})
 
 		// Legacy alias for scaleway_account_ssh_key.

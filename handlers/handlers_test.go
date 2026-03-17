@@ -110,14 +110,18 @@ func TestMarketplaceLocalImagesCompatibleTypesContainsDEV1S(t *testing.T) {
 	require.Contains(t, compatible, "DEV1-S")
 }
 
-func TestMarketplaceLocalImagesUnknownLabelEmpty(t *testing.T) {
+func TestMarketplaceLocalImagesUnknownLabelReturnsResult(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
+	// Any label should return results — the marketplace generates deterministic
+	// UUIDs for unknown labels so new images work without code changes.
 	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=not_real&zone=fr-par-1&type=instance_sbs")
 	require.Equal(t, 200, status)
-	require.Equal(t, float64(0), body["total_count"])
-	require.Len(t, body["local_images"].([]any), 0)
+	require.Equal(t, float64(1), body["total_count"])
+	images := body["local_images"].([]any)
+	require.Len(t, images, 1)
+	require.Equal(t, "not_real", images[0].(map[string]any)["label"])
 }
 
 func TestMarketplaceLocalImageGetByID(t *testing.T) {
@@ -144,6 +148,24 @@ func TestMarketplaceLocalImageGetUnknownID404(t *testing.T) {
 	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images/00000000-0000-0000-0000-000000000000")
 	require.Equal(t, 404, status)
 	require.Equal(t, "not_found", body["type"])
+}
+
+func TestMarketplaceLocalImageDynamicLabelRoundTrip(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// List with a dynamic label caches the label for GET resolution.
+	status, list := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=custom_os&zone=fr-par-1&type=instance_sbs")
+	require.Equal(t, 200, status)
+	images := list["local_images"].([]any)
+	require.Len(t, images, 1)
+	id := images[0].(map[string]any)["id"].(string)
+
+	// GET the same ID should return matching metadata.
+	status, got := testutil.DoGet(t, ts, "/marketplace/v2/local-images/"+id)
+	require.Equal(t, 200, status)
+	require.Equal(t, "custom_os", got["label"])
+	require.Equal(t, "fr-par-1", got["zone"])
 }
 
 func TestMarketplaceLocalImagesPaginationIgnored(t *testing.T) {
@@ -2406,6 +2428,12 @@ func TestDNSZoneListReturnsZones(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
+	// Create a zone first.
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain":    "example.com",
+		"subdomain": "",
+	})
+
 	// List with domain filter.
 	status, body := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones?domain=example.com")
 	require.Equal(t, 200, status)
@@ -2774,6 +2802,9 @@ func TestFullHappyPath(t *testing.T) {
 
 	// === Phase 5: DNS ===
 
+	testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain": "example.com", "subdomain": "",
+	})
 	status, zones := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones?domain=example.com")
 	require.Equal(t, 200, status)
 	require.GreaterOrEqual(t, len(zones["dns_zones"].([]any)), 1)
@@ -4415,16 +4446,15 @@ func TestDeletePoolReturnsObjectWithDeletingStatus(t *testing.T) {
 	require.Equal(t, "pool1", out["name"])
 }
 
-func TestDNSZoneListDefaultDomain(t *testing.T) {
+func TestDNSZoneListEmptyWhenNoZonesCreated(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
-	// No domain param — should default to example.com.
+	// No zones created — list should return empty.
 	status, body := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones")
 	require.Equal(t, 200, status)
 	zones := body["dns_zones"].([]any)
-	require.GreaterOrEqual(t, len(zones), 1)
-	require.Equal(t, "example.com", zones[0].(map[string]any)["domain"])
+	require.Len(t, zones, 0)
 }
 
 func TestDeleteRDBACLsEndpoint(t *testing.T) {
@@ -6442,4 +6472,206 @@ func TestK8sGetVersion(t *testing.T) {
 	// Unknown version returns 404.
 	status, _ = testutil.DoGet(t, ts, "/k8s/v1/regions/fr-par/versions/9.99")
 	require.Equal(t, 404, status)
+}
+
+func TestK8sUpgradeNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	bogus := "00000000-0000-0000-0000-000000000001"
+
+	status, _ := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters/"+bogus+"/upgrade",
+		map[string]any{"version": "1.31.2"})
+	require.Equal(t, 404, status)
+
+	status, _ = testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/pools/"+bogus+"/upgrade",
+		map[string]any{"version": "1.31.2"})
+	require.Equal(t, 404, status)
+}
+
+func TestInstanceVolumeNotFound(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	bogus := "00000000-0000-0000-0000-000000000001"
+
+	status, _ := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+bogus)
+	require.Equal(t, 404, status)
+
+	body, _ := json.Marshal(map[string]any{"name": "updated"})
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/instance/v1/zones/fr-par-1/volumes/"+bogus, bytes.NewReader(body))
+	req.Header.Set("X-Auth-Token", "test")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 404, resp.StatusCode)
+}
+
+func TestVolumeDeleteEmbedded(t *testing.T) {
+	// Deleting an embedded (server-attached) volume ID that doesn't exist in
+	// the standalone table should still return 204 (no-op, not an error).
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	embeddedID := "00000000-0000-0000-0000-000000000099"
+	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/volumes/"+embeddedID)
+	require.Equal(t, 204, status)
+}
+
+func TestVPCRouteCRUDLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a VPC first (routes need a vpc_id FK).
+	status, vpc := testutil.DoCreate(t, ts, "/vpc/v2/regions/fr-par/vpcs", map[string]any{"name": "route-test-vpc"})
+	require.Equal(t, 200, status)
+	vpcID := vpc["id"].(string)
+
+	// Create a route.
+	status, route := testutil.DoCreate(t, ts, "/vpc/v2/regions/fr-par/routes", map[string]any{
+		"vpc_id":      vpcID,
+		"destination": "10.0.0.0/8",
+		"description": "test route",
+	})
+	require.Equal(t, 200, status)
+	routeID := route["id"].(string)
+	require.Equal(t, vpcID, route["vpc_id"])
+	require.Equal(t, "10.0.0.0/8", route["destination"])
+	require.Equal(t, "custom", route["type"])
+
+	// Get the route.
+	status, got := testutil.DoGet(t, ts, "/vpc/v2/regions/fr-par/routes/"+routeID)
+	require.Equal(t, 200, status)
+	require.Equal(t, routeID, got["id"])
+
+	// List routes.
+	status, list := testutil.DoList(t, ts, "/vpc/v2/regions/fr-par/routes?vpc_id="+vpcID)
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), list["total_count"])
+
+	// Update the route.
+	status, updated := testutil.DoPatch(t, ts, "/vpc/v2/regions/fr-par/routes/"+routeID, map[string]any{
+		"description": "updated route",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "updated route", updated["description"])
+	require.Equal(t, "10.0.0.0/8", updated["destination"]) // unchanged field preserved
+
+	// Delete the route.
+	status = testutil.DoDelete(t, ts, "/vpc/v2/regions/fr-par/routes/"+routeID)
+	require.Equal(t, 204, status)
+
+	// Confirm 404 on get.
+	status, _ = testutil.DoGet(t, ts, "/vpc/v2/regions/fr-par/routes/"+routeID)
+	require.Equal(t, 404, status)
+}
+
+func TestVPCRouteFK404OnBadVPC(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, _ := testutil.DoCreate(t, ts, "/vpc/v2/regions/fr-par/routes", map[string]any{
+		"vpc_id":      "00000000-0000-0000-0000-000000000bad",
+		"destination": "10.0.0.0/8",
+	})
+	require.Equal(t, 404, status)
+}
+
+func TestVPCPublicGatewayCRUDLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a gateway.
+	status, gw := testutil.DoCreate(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateways", map[string]any{
+		"name": "test-gw",
+		"type": "VPC-GW-S",
+	})
+	require.Equal(t, 200, status)
+	gwID := gw["id"].(string)
+	require.Equal(t, "running", gw["status"])
+
+	// Get.
+	status, got := testutil.DoGet(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateways/"+gwID)
+	require.Equal(t, 200, status)
+	require.Equal(t, gwID, got["id"])
+
+	// List.
+	status, list := testutil.DoList(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateways")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), list["total_count"])
+
+	// Delete.
+	status = testutil.DoDelete(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateways/"+gwID)
+	require.Equal(t, 204, status)
+}
+
+func TestVPCGatewayNetworkCRUDLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create prerequisites: VPC → Private Network, Public Gateway.
+	_, vpc := testutil.DoCreate(t, ts, "/vpc/v2/regions/fr-par/vpcs", map[string]any{"name": "gn-vpc"})
+	vpcID := vpc["id"].(string)
+
+	_, pn := testutil.DoCreate(t, ts, "/vpc/v2/regions/fr-par/private-networks", map[string]any{
+		"name":   "gn-pn",
+		"vpc_id": vpcID,
+	})
+	pnID := pn["id"].(string)
+
+	_, gw := testutil.DoCreate(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateways", map[string]any{
+		"name": "gn-gw",
+		"type": "VPC-GW-S",
+	})
+	gwID := gw["id"].(string)
+
+	// Create gateway network.
+	status, gn := testutil.DoCreate(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateway-networks", map[string]any{
+		"gateway_id":         gwID,
+		"private_network_id": pnID,
+		"enable_masquerade":  true,
+	})
+	require.Equal(t, 200, status)
+	gnID := gn["id"].(string)
+	require.Equal(t, true, gn["enable_masquerade"])
+
+	// Get.
+	status, got := testutil.DoGet(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateway-networks/"+gnID)
+	require.Equal(t, 200, status)
+	require.Equal(t, gnID, got["id"])
+
+	// Delete.
+	status = testutil.DoDelete(t, ts, "/vpc-gw/v2/zones/fr-par-1/gateway-networks/"+gnID)
+	require.Equal(t, 204, status)
+}
+
+func TestDNSZoneCRUDLifecycle(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a DNS zone.
+	status, zone := testutil.DoCreate(t, ts, "/domain/v2beta1/dns-zones", map[string]any{
+		"domain":    "myapp.com",
+		"subdomain": "",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "myapp.com", zone["domain"])
+	require.Equal(t, "active", zone["status"])
+
+	// List should include the stored zone when filtering by domain.
+	status, list := testutil.DoList(t, ts, "/domain/v2beta1/dns-zones?domain=myapp.com")
+	require.Equal(t, 200, status)
+	require.Equal(t, float64(1), list["total_count"])
+
+	// Update the zone.
+	status, updated := testutil.DoPatch(t, ts, "/domain/v2beta1/dns-zones/myapp.com", map[string]any{
+		"project_id": "11111111-1111-1111-1111-111111111111",
+	})
+	require.Equal(t, 200, status)
+	require.Equal(t, "11111111-1111-1111-1111-111111111111", updated["project_id"])
+
+	// Delete the zone.
+	status = testutil.DoDelete(t, ts, "/domain/v2beta1/dns-zones/myapp.com")
+	require.Equal(t, 204, status)
 }

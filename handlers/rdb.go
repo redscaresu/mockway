@@ -214,18 +214,48 @@ func (app *Application) SetRDBACLs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
+	instanceID := chi.URLParam(r, "instance_id")
 	rules, _ := body["rules"].([]any)
 	if rules == nil {
 		rules = []any{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+	stored, err := app.repo.SetRDBACLs(instanceID, rules)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": stored})
 }
 
-func (app *Application) ListRDBACLs(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"rules": []any{}, "total_count": 0})
+func (app *Application) ListRDBACLs(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instance_id")
+	rules, err := app.repo.ListRDBACLs(instanceID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules, "total_count": len(rules)})
 }
 
-func (app *Application) DeleteRDBACLs(w http.ResponseWriter, _ *http.Request) {
+func (app *Application) DeleteRDBACLs(w http.ResponseWriter, r *http.Request) {
+	instanceID := chi.URLParam(r, "instance_id")
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	var ruleIPs []string
+	if acls, ok := body["acl_rules_ips"].([]any); ok {
+		for _, v := range acls {
+			if ip, ok := v.(string); ok {
+				ruleIPs = append(ruleIPs, ip)
+			}
+		}
+	}
+	if err := app.repo.DeleteRDBACLs(instanceID, ruleIPs); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeNoContent(w)
 }
 

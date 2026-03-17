@@ -66,13 +66,16 @@ export SCW_DEFAULT_ZONE="fr-par-1"
 export TF_IN_AUTOMATION="1"
 
 # Determine which examples to test.
+DIRS=()
 if [[ $# -gt 0 ]]; then
-  DIRS=()
   for name in "$@"; do
     DIRS+=("${EXAMPLES_DIR}/${name}")
   done
 else
-  mapfile -t DIRS < <(find "${EXAMPLES_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
+  # Use while-read to stay compatible with bash 3.2 (macOS system shell lacks mapfile).
+  while IFS= read -r dir; do
+    DIRS+=("$dir")
+  done < <(find "${EXAMPLES_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
 fi
 
 PASSED=()

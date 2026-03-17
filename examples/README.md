@@ -103,12 +103,69 @@ Configs that apply and destroy correctly. These show the right way to express Sc
 |---|---|
 | `working/basic_instance` | Server with a security group; `security_group_id` uses a resource reference |
 | `working/vpc_and_private_network` | VPC → private network → server → private NIC dependency chain |
+| `working/vpc_route` | VPC with a custom route pointing at a private network |
 | `working/iam_full` | IAM application, API key, policy (with rules), and SSH key |
 | `working/load_balancer` | LB → backend → frontend; each resource references its parent |
+| `working/lb_with_ip` | LB with explicit `scaleway_lb_ip` allocation via `ip_id` |
+| `working/lb_with_acl` | LB with frontend ACL rules |
+| `working/lb_with_route` | LB with route rules |
+| `working/lb_with_certificate` | LB with Let's Encrypt certificate attached to frontend |
+| `working/lb_private_network` | LB attached to a VPC private network |
 | `working/kubernetes_cluster` | K8s cluster and node pool |
+| `working/k8s_with_auto_upgrade` | K8s cluster with auto-upgrade and maintenance window |
 | `working/rdb_instance` | RDB instance, database, and user; `disable_backup` translation |
+| `working/rdb_read_replica` | RDB instance with a read replica |
+| `working/rdb_with_acl` | RDB instance with ACL rules (stateful — persisted across reads) |
 | `working/redis_cluster` | Redis cluster |
 | `working/registry_namespace` | Container registry namespace |
+| `working/block_volume` | Block storage volume |
+| `working/block_snapshot` | Block volume with a snapshot |
+| `working/instance_ip` | Standalone reserved IP |
+| `working/instance_volume` | Standalone instance volume |
+| `working/domain_zone` | DNS zone with an A record |
+
+### updates
+
+Update scenarios that verify in-place resource modifications work correctly. Each directory contains `main.tf` (with variables), `v1.tfvars` (initial state), and `v2.tfvars` (updated state). The test cycle is: apply v1 → verify no-op plan → apply v2 → verify no-op plan → destroy.
+
+**How to run an update example manually:**
+
+```bash
+cd updates/rename_server
+
+terraform init
+terraform apply -auto-approve -var-file=v1.tfvars    # create with v1 values
+terraform plan -detailed-exitcode -var-file=v1.tfvars # should be no-op (exit 0)
+terraform apply -auto-approve -var-file=v2.tfvars     # update to v2 values
+terraform plan -detailed-exitcode -var-file=v2.tfvars # should be no-op (exit 0)
+terraform destroy -auto-approve -var-file=v2.tfvars   # clean up
+```
+
+Or use the automated script:
+
+```bash
+./scripts/test-updates.sh                    # all update examples
+./scripts/test-updates.sh rename_server      # specific example
+```
+
+| Example | What it changes v1 → v2 |
+|---|---|
+| `updates/rename_server` | Instance server name |
+| `updates/update_lb` | LB name and description |
+| `updates/update_lb_backend` | LB backend name and `health_check_max_retries` |
+| `updates/update_k8s_cluster` | K8s cluster name and tags |
+| `updates/update_rdb_instance` | RDB instance name and `disable_backup` toggle |
+| `updates/update_redis_cluster` | Redis cluster name and tags |
+| `updates/update_vpc` | VPC name |
+| `updates/update_private_network` | Private network name |
+| `updates/update_vpc_route` | VPC route description |
+| `updates/update_iam_application` | IAM application name and description |
+| `updates/update_iam_policy` | IAM policy name and description |
+| `updates/update_iam_ssh_key` | SSH key name |
+| `updates/update_security_group` | Security group name and inbound default policy |
+| `updates/update_instance_ip` | Instance IP tags |
+| `updates/update_block_volume` | Block volume name and tags |
+| `updates/update_registry_namespace` | Registry namespace description and `is_public` toggle |
 
 ### misconfigured
 

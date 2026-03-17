@@ -190,6 +190,11 @@ func (r *Repository) init() error {
 			data JSON NOT NULL,
 			PRIMARY KEY (instance_id, user_name, database_name)
 		)`,
+		`CREATE TABLE IF NOT EXISTS dns_zones (
+			dns_zone TEXT PRIMARY KEY,
+			domain TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS domain_records (
 			id TEXT PRIMARY KEY,
 			dns_zone TEXT NOT NULL,
@@ -274,11 +279,35 @@ func (r *Repository) init() error {
 			region TEXT NOT NULL,
 			data JSON NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS rdb_acls (
+			instance_id TEXT PRIMARY KEY REFERENCES rdb_instances(id) ON DELETE CASCADE,
+			data JSON NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS rdb_backups (
 			id TEXT PRIMARY KEY,
 			instance_id TEXT NOT NULL REFERENCES rdb_instances(id) ON DELETE CASCADE,
 			region TEXT NOT NULL,
 			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS vpc_routes (
+			id TEXT PRIMARY KEY,
+			vpc_id TEXT NOT NULL REFERENCES vpcs(id),
+			region TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS vpc_public_gateways (
+			id TEXT PRIMARY KEY,
+			zone TEXT NOT NULL,
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS vpc_gateway_networks (
+			id TEXT PRIMARY KEY,
+			gateway_id TEXT NOT NULL REFERENCES vpc_public_gateways(id),
+			private_network_id TEXT NOT NULL REFERENCES private_networks(id),
+			data JSON NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS marketplace_labels (
+			label TEXT PRIMARY KEY
 		)`,
 		`CREATE TABLE IF NOT EXISTS lb_acls (
 			id TEXT PRIMARY KEY,
@@ -439,6 +468,8 @@ func (r *Repository) Reset() error {
 		"rdb_backups",
 		"rdb_snapshots",
 		"rdb_read_replicas",
+		"marketplace_labels",
+		"rdb_acls",
 		"rdb_privileges",
 		"rdb_databases",
 		"rdb_users",
@@ -454,6 +485,10 @@ func (r *Repository) Reset() error {
 		"iam_users",
 		"iam_applications",
 		"domain_records",
+		"dns_zones",
+		"vpc_gateway_networks",
+		"vpc_public_gateways",
+		"vpc_routes",
 		"private_networks",
 		"vpcs",
 	}
@@ -550,6 +585,42 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// patchMerge applies patch onto current with null-safe deep-merge semantics:
+//   - Keys listed in skip are never overwritten (typically "id").
+//   - Top-level null values in patch are ignored (Scaleway SDK sends null for
+//     optional fields it doesn't intend to clear).
+//   - Nested map values are deep-merged one level: null sub-fields in the patch
+//     are skipped so they don't wipe stored sub-field values.
+func patchMerge(current, patch map[string]any, skip ...string) map[string]any {
+	skipSet := make(map[string]struct{}, len(skip))
+	for _, s := range skip {
+		skipSet[s] = struct{}{}
+	}
+	next := cloneMap(current)
+	for k, v := range patch {
+		if _, ok := skipSet[k]; ok {
+			continue
+		}
+		if v == nil {
+			continue
+		}
+		if patchMap, ok := v.(map[string]any); ok {
+			if curMap, ok := next[k].(map[string]any); ok {
+				merged := cloneMap(curMap)
+				for pk, pv := range patchMap {
+					if pv != nil {
+						merged[pk] = pv
+					}
+				}
+				next[k] = merged
+				continue
+			}
+		}
+		next[k] = v
+	}
+	return next
 }
 
 func unmarshalData(raw []byte) (map[string]any, error) {
@@ -766,6 +837,201 @@ func (r *Repository) DeletePrivateNetwork(id string) error {
 	return r.deleteBy("private_networks", "id = ?", id)
 }
 
+// --- VPC Routes ---
+
+// --- Marketplace Labels ---
+
+func (r *Repository) AddMarketplaceLabel(label string) error {
+	_, err := r.db.Exec(
+		`INSERT OR IGNORE INTO marketplace_labels (label) VALUES (?)`, label,
+	)
+	return err
+}
+
+func (r *Repository) ListMarketplaceLabels() ([]string, error) {
+	rows, err := r.db.Query(`SELECT label FROM marketplace_labels`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var labels []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
+}
+
+// --- VPC Routes ---
+
+func (r *Repository) CreateVPCRoute(region string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["region"] = region
+	data["created_at"] = now
+	data["updated_at"] = now
+	data["is_read_only"] = false
+	if _, ok := data["type"]; !ok {
+		data["type"] = "custom"
+	}
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	vpcID, _ := data["vpc_id"].(string)
+	return r.createSimple("vpc_routes", "region", region, data, colVal{name: "vpc_id", val: vpcID})
+}
+
+func (r *Repository) GetVPCRoute(id string) (map[string]any, error) {
+	return r.getJSONByID("vpc_routes", "id", id)
+}
+
+func (r *Repository) ListVPCRoutes(region, vpcID string) ([]map[string]any, error) {
+	if vpcID != "" {
+		return r.listJSON("vpc_routes", "vpc_id", vpcID)
+	}
+	return r.listJSON("vpc_routes", "region", region)
+}
+
+func (r *Repository) UpdateVPCRoute(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("vpc_routes", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	// Keep vpc_id and region SQL columns in sync.
+	vpcID, _ := next["vpc_id"].(string)
+	region, _ := next["region"].(string)
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE vpc_routes SET data = ?, vpc_id = ?, region = ? WHERE id = ?`,
+		b, vpcID, region, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteVPCRoute(id string) error {
+	return r.deleteBy("vpc_routes", "id = ?", id)
+}
+
+// --- VPC Public Gateways ---
+
+func (r *Repository) CreateVPCPublicGateway(zone string, data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["zone"] = zone
+	data["status"] = "running"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["tags"]; !ok {
+		data["tags"] = []any{}
+	}
+	if _, ok := data["bastion_enabled"]; !ok {
+		data["bastion_enabled"] = false
+	}
+	if _, ok := data["enable_smtp"]; !ok {
+		data["enable_smtp"] = false
+	}
+	return r.createSimple("vpc_public_gateways", "zone", zone, data)
+}
+
+func (r *Repository) GetVPCPublicGateway(id string) (map[string]any, error) {
+	return r.getJSONByID("vpc_public_gateways", "id", id)
+}
+
+func (r *Repository) ListVPCPublicGateways(zone string) ([]map[string]any, error) {
+	return r.listJSON("vpc_public_gateways", "zone", zone)
+}
+
+func (r *Repository) UpdateVPCPublicGateway(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("vpc_public_gateways", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("vpc_public_gateways", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteVPCPublicGateway(id string) error {
+	return r.deleteBy("vpc_public_gateways", "id = ?", id)
+}
+
+// --- VPC Gateway Networks ---
+
+func (r *Repository) CreateVPCGatewayNetwork(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	data["status"] = "ready"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["enable_masquerade"]; !ok {
+		data["enable_masquerade"] = false
+	}
+	gatewayID, _ := data["gateway_id"].(string)
+	pnID, _ := data["private_network_id"].(string)
+	id := newID()
+	data["id"] = id
+	cols := []colVal{
+		{name: "id", val: id},
+		{name: "gateway_id", val: gatewayID},
+		{name: "private_network_id", val: pnID},
+	}
+	if err := r.insertJSON("vpc_gateway_networks", cols, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetVPCGatewayNetwork(id string) (map[string]any, error) {
+	return r.getJSONByID("vpc_gateway_networks", "id", id)
+}
+
+func (r *Repository) ListVPCGatewayNetworks(gatewayID string) ([]map[string]any, error) {
+	if gatewayID != "" {
+		return r.listJSON("vpc_gateway_networks", "gateway_id", gatewayID)
+	}
+	return r.listJSON("vpc_gateway_networks", "", "")
+}
+
+func (r *Repository) UpdateVPCGatewayNetwork(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("vpc_gateway_networks", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	// Keep gateway_id and private_network_id SQL columns in sync.
+	gatewayID, _ := next["gateway_id"].(string)
+	pnID, _ := next["private_network_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE vpc_gateway_networks SET data = ?, gateway_id = ?, private_network_id = ? WHERE id = ?`,
+		b, gatewayID, pnID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteVPCGatewayNetwork(id string) error {
+	return r.deleteBy("vpc_gateway_networks", "id = ?", id)
+}
+
 func (r *Repository) CreateSecurityGroup(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
 	now := nowRFC3339()
@@ -810,13 +1076,7 @@ func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[s
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
 		return nil, err
@@ -829,8 +1089,33 @@ func (r *Repository) SetSecurityGroupRules(id string, rules any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
+	// Normalise user-provided rules: inject server-generated fields that the
+	// Scaleway Terraform provider (v2.70+) requires for idempotency.
+	//
+	//  - id: the provider stores rule IDs in state; they must be non-nil.
+	//  - editable: the provider skips rules where Editable == false. Our stored
+	//    rules come from the provider body which sends editable:null. null
+	//    unmarshals to Go bool false, causing the provider to silently discard
+	//    ALL user rules on every Read, leaving inbound_rule:[]. Fix: force true.
+	normalized := rules
+	if ruleSlice, ok := rules.([]any); ok {
+		out := make([]any, len(ruleSlice))
+		for i, r := range ruleSlice {
+			if m, ok := r.(map[string]any); ok {
+				m = cloneMap(m)
+				if m["id"] == nil || m["id"] == "" {
+					m["id"] = uuid.NewString()
+				}
+				m["editable"] = true
+				out[i] = m
+			} else {
+				out[i] = r
+			}
+		}
+		normalized = out
+	}
 	next := cloneMap(current)
-	next["rules"] = rules
+	next["rules"] = normalized
 	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -1041,13 +1326,7 @@ func (r *Repository) UpdateInstanceVolume(id string, patch map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
 	if err := r.updateJSONByID("instance_volumes", "id", id, next); err != nil {
 		return nil, err
@@ -1203,7 +1482,9 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 	data["updated_at"] = now
 	id := newID()
 	data["id"] = id
-	data["ip"] = []any{map[string]any{
+
+	// If ip_id is provided, use the existing LB IP; otherwise generate one inline.
+	ipEntry := map[string]any{
 		"id":              newID(),
 		"ip_address":      fakePublicIP(),
 		"lb_id":           id,
@@ -1212,7 +1493,17 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 		"project_id":      "00000000-0000-0000-0000-000000000000",
 		"zone":            zone,
 		"region":          regionFromZone(zone),
-	}}
+	}
+	if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
+		existing, err := r.GetLBIP(ipID)
+		if err != nil {
+			return nil, models.ErrNotFound
+		}
+		ipEntry = cloneMap(existing)
+		ipEntry["lb_id"] = id
+	}
+	data["ip"] = []any{ipEntry}
+
 	if err := r.insertJSON("lbs", []colVal{{name: "id", val: id}, {name: "zone", val: zone}}, data); err != nil {
 		return nil, err
 	}
@@ -1227,13 +1518,7 @@ func (r *Repository) UpdateLB(id string, patch map[string]any) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lbs", "id", id, next); err != nil {
 		return nil, err
@@ -1329,13 +1614,7 @@ func (r *Repository) UpdateFrontend(id string, patch map[string]any) (map[string
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	if backendID, ok := next["backend_id"].(string); ok && backendID != "" {
 		backend, err := r.GetBackend(backendID)
 		if err != nil {
@@ -1407,13 +1686,7 @@ func (r *Repository) UpdateBackend(id string, patch map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_backends", "id", id, next); err != nil {
 		return nil, err
@@ -1554,12 +1827,15 @@ func (r *Repository) UpdateCluster(id string, patch map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
+	next := patchMerge(current, patch, "id")
+	// Re-apply the enable→enabled normalisation (same as CreateCluster) in
+	// case the PATCH body used the old "enable" key.
+	if au, ok := next["auto_upgrade"].(map[string]any); ok {
+		if v, hasEnable := au["enable"]; hasEnable {
+			au["enabled"] = v
+			delete(au, "enable")
 		}
-		next[k] = v
+		next["auto_upgrade"] = au
 	}
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("k8s_clusters", "id", id, next); err != nil {
@@ -1658,13 +1934,7 @@ func (r *Repository) UpdatePool(id string, patch map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("k8s_pools", "id", id, next); err != nil {
 		return nil, err
@@ -1768,12 +2038,23 @@ func (r *Repository) UpdateRDBInstance(id string, patch map[string]any) (map[str
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
+	next := patchMerge(current, patch, "id")
+	// The provider sends "disable_backup" on Create but "is_backup_schedule_disabled"
+	// on Update. Translate both to backup_schedule.disabled so GET round-trips correctly.
+	for _, key := range []string{"disable_backup", "is_backup_schedule_disabled"} {
+		if v, ok := next[key]; ok {
+			disabled, _ := v.(bool)
+			if bs, ok := next["backup_schedule"].(map[string]any); ok {
+				bs["disabled"] = disabled
+			} else {
+				next["backup_schedule"] = map[string]any{
+					"disabled":  disabled,
+					"frequency": 24,
+					"retention": 7,
+				}
+			}
+			delete(next, key)
 		}
-		next[k] = v
 	}
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("rdb_instances", "id", id, next); err != nil {
@@ -1844,13 +2125,7 @@ func (r *Repository) UpdateRDBUser(instanceID, name string, patch map[string]any
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "instance_id" || k == "name" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "instance_id", "name")
 	b, err := marshalData(next)
 	if err != nil {
 		return nil, err
@@ -1895,6 +2170,147 @@ func (r *Repository) SetRDBPrivileges(instanceID string, privileges []any) ([]ma
 
 func (r *Repository) ListRDBPrivileges(instanceID string) ([]map[string]any, error) {
 	return r.listJSON("rdb_privileges", "instance_id", instanceID)
+}
+
+// --- RDB ACLs ---
+
+func (r *Repository) SetRDBACLs(instanceID string, rules []any) ([]any, error) {
+	b, err := marshalData(map[string]any{"rules": rules})
+	if err != nil {
+		return nil, err
+	}
+	_, err = r.db.Exec(
+		`INSERT INTO rdb_acls (instance_id, data) VALUES (?, ?)
+		 ON CONFLICT(instance_id) DO UPDATE SET data = excluded.data`,
+		instanceID, b,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return rules, nil
+}
+
+func (r *Repository) ListRDBACLs(instanceID string) ([]any, error) {
+	row := r.db.QueryRow("SELECT data FROM rdb_acls WHERE instance_id = ?", instanceID)
+	var raw []byte
+	if err := row.Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []any{}, nil
+		}
+		return nil, err
+	}
+	data, err := unmarshalData(raw)
+	if err != nil {
+		return nil, err
+	}
+	rules, _ := data["rules"].([]any)
+	if rules == nil {
+		rules = []any{}
+	}
+	return rules, nil
+}
+
+func (r *Repository) DeleteRDBACLs(instanceID string, ruleIPs []string) error {
+	if len(ruleIPs) == 0 {
+		_, err := r.db.Exec("DELETE FROM rdb_acls WHERE instance_id = ?", instanceID)
+		return err
+	}
+	// Remove specific rules by IP.
+	existing, err := r.ListRDBACLs(instanceID)
+	if err != nil {
+		return err
+	}
+	removeSet := make(map[string]bool, len(ruleIPs))
+	for _, ip := range ruleIPs {
+		removeSet[ip] = true
+	}
+	kept := make([]any, 0, len(existing))
+	for _, raw := range existing {
+		if rule, ok := raw.(map[string]any); ok {
+			if ip, ok := rule["ip"].(string); ok && removeSet[ip] {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	_, err = r.SetRDBACLs(instanceID, kept)
+	return err
+}
+
+// --- DNS Zones ---
+
+func (r *Repository) CreateDNSZone(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	domain, _ := data["domain"].(string)
+	subdomain, _ := data["subdomain"].(string)
+	dnsZone := domain
+	if subdomain != "" {
+		dnsZone = subdomain + "." + domain
+	}
+	now := nowRFC3339()
+	data["status"] = "active"
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["ns"]; !ok {
+		data["ns"] = []any{"ns0.dom.scw.cloud", "ns1.dom.scw.cloud"}
+	}
+	if _, ok := data["ns_default"]; !ok {
+		data["ns_default"] = []any{"ns0.dom.scw.cloud", "ns1.dom.scw.cloud"}
+	}
+	if _, ok := data["ns_master"]; !ok {
+		data["ns_master"] = []any{}
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	}
+	b, err := marshalData(data)
+	if err != nil {
+		return nil, err
+	}
+	_, err = r.db.Exec(
+		`INSERT INTO dns_zones (dns_zone, domain, data) VALUES (?, ?, ?)`,
+		dnsZone, domain, b,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	return data, nil
+}
+
+func (r *Repository) GetDNSZone(dnsZone string) (map[string]any, error) {
+	return r.getJSONByID("dns_zones", "dns_zone", dnsZone)
+}
+
+func (r *Repository) ListDNSZones(domain string) ([]map[string]any, error) {
+	if domain != "" {
+		return r.listJSON("dns_zones", "domain", domain)
+	}
+	return r.listJSON("dns_zones", "", "")
+}
+
+func (r *Repository) UpdateDNSZone(dnsZone string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("dns_zones", "dns_zone", dnsZone)
+	if err != nil {
+		return nil, err
+	}
+	next := patchMerge(current, patch, "domain", "subdomain")
+	next["updated_at"] = nowRFC3339()
+	b, err := marshalData(next)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.db.Exec(`UPDATE dns_zones SET data = ? WHERE dns_zone = ?`, b, dnsZone); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Repository) DeleteDNSZone(dnsZone string) error {
+	// Cascade-delete records in this zone.
+	if _, err := r.db.Exec("DELETE FROM domain_records WHERE dns_zone = ?", dnsZone); err != nil {
+		return err
+	}
+	return r.deleteBy("dns_zones", "dns_zone = ?", dnsZone)
 }
 
 func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[string]any, error) {
@@ -2148,13 +2564,7 @@ func (r *Repository) UpdateVPC(id string, patch map[string]any) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	// Keep the indexed region SQL column in sync so ListVPCs filtering stays correct.
 	region, _ := next["region"].(string)
@@ -2173,13 +2583,7 @@ func (r *Repository) UpdatePrivateNetwork(id string, patch map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	// Keep vpc_id and region SQL columns in sync so FK cascades and list
 	// filtering remain correct after a PATCH that moves the network to a new VPC.
@@ -2207,13 +2611,7 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
 
 	// Reconcile security_group and security_group_id so that both JSON fields
@@ -2286,13 +2684,7 @@ func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	// The Scaleway API sends the server reference as "server" (a nullable string
 	// value), not "server_id". Normalise both field names so that attach/detach
 	// works regardless of which name the caller uses.
@@ -2326,13 +2718,7 @@ func (r *Repository) UpdateLBIP(id string, patch map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	if err := r.updateJSONByID("lb_ips", "id", id, next); err != nil {
 		return nil, err
 	}
@@ -2344,13 +2730,7 @@ func (r *Repository) UpdateIAMApplication(id string, patch map[string]any) (map[
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("iam_applications", "id", id, next); err != nil {
 		return nil, err
@@ -2363,13 +2743,7 @@ func (r *Repository) UpdateIAMAPIKey(accessKey string, patch map[string]any) (ma
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "access_key" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "access_key")
 	next["updated_at"] = nowRFC3339()
 	delete(next, "secret_key") // never return secret_key on update
 	// Keep application_id SQL column in sync when the FK field changes.
@@ -2396,13 +2770,7 @@ func (r *Repository) UpdateIAMPolicy(id string, patch map[string]any) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	// Keep application_id SQL column in sync when the FK field changes.
 	var appIDArg any
@@ -2428,13 +2796,7 @@ func (r *Repository) UpdateIAMSSHKey(id string, patch map[string]any) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("iam_ssh_keys", "id", id, next); err != nil {
 		return nil, err
@@ -2537,18 +2899,12 @@ func (r *Repository) UpdateRedisCluster(id string, patch map[string]any) (map[st
 	if err != nil {
 		return nil, err
 	}
-	merged := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		merged[k] = v
-	}
-	merged["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("redis_clusters", "id", id, merged); err != nil {
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("redis_clusters", "id", id, next); err != nil {
 		return nil, err
 	}
-	return merged, nil
+	return next, nil
 }
 
 func (r *Repository) DeleteRedisCluster(id string) error {
@@ -2592,13 +2948,7 @@ func (r *Repository) UpdateIAMUser(id string, patch map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("iam_users", "id", id, next); err != nil {
 		return nil, err
@@ -2687,13 +3037,7 @@ func (r *Repository) UpdateIAMGroup(id string, patch map[string]any) (map[string
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("iam_groups", "id", id, next); err != nil {
 		return nil, err
@@ -2783,13 +3127,7 @@ func (r *Repository) UpdateBlockVolume(id string, patch map[string]any) (map[str
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	// Recompute perf_iops when the volume type changes.
 	if newType, ok := next["type"].(string); ok {
@@ -2813,7 +3151,10 @@ func (r *Repository) CreateBlockSnapshot(zone, volumeID string, data map[string]
 	data = cloneMap(data)
 	now := nowRFC3339()
 	data["zone"] = zone
-	data["volume_id"] = volumeID
+	// Provider sends flat "volume_id" on create but its Read function reads
+	// snapshot.ParentVolume.ID (nested). Store as parent_volume so GET round-trips.
+	delete(data, "volume_id")
+	data["parent_volume"] = map[string]any{"id": volumeID}
 	data["status"] = "available"
 	data["created_at"] = now
 	data["updated_at"] = now
@@ -2836,13 +3177,7 @@ func (r *Repository) UpdateBlockSnapshot(id string, patch map[string]any) (map[s
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("block_snapshots", "id", id, next); err != nil {
 		return nil, err
@@ -2891,13 +3226,7 @@ func (r *Repository) UpdateIPAMIP(id string, patch map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("ipam_ips", "id", id, next); err != nil {
 		return nil, err
@@ -2999,13 +3328,7 @@ func (r *Repository) UpdateRDBSnapshot(id string, patch map[string]any) (map[str
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("rdb_snapshots", "id", id, next); err != nil {
 		return nil, err
@@ -3072,13 +3395,7 @@ func (r *Repository) UpdateRDBBackup(id string, patch map[string]any) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("rdb_backups", "id", id, next); err != nil {
 		return nil, err
@@ -3279,13 +3596,7 @@ func (r *Repository) UpdateLBACL(id string, patch map[string]any) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_acls", "id", id, next); err != nil {
 		return nil, err
@@ -3350,13 +3661,7 @@ func (r *Repository) UpdateLBRoute(id string, patch map[string]any) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_routes", "id", id, next); err != nil {
 		return nil, err
@@ -3379,6 +3684,30 @@ func (r *Repository) CreateLBCertificate(lbID string, data map[string]any) (map[
 	if _, ok := data["status"]; !ok {
 		data["status"] = "ready"
 	}
+	if _, ok := data["fingerprint"]; !ok {
+		data["fingerprint"] = "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+	}
+	if _, ok := data["not_valid_before"]; !ok {
+		data["not_valid_before"] = now
+	}
+	if _, ok := data["not_valid_after"]; !ok {
+		data["not_valid_after"] = now
+	}
+	if _, ok := data["common_name"]; !ok {
+		// Extract common_name from letsencrypt or custom_certificate config.
+		if le, ok := data["letsencrypt"].(map[string]any); ok {
+			if cn, ok := le["common_name"].(string); ok {
+				data["common_name"] = cn
+			}
+		}
+	}
+	if _, ok := data["subject_alternative_name"]; !ok {
+		data["subject_alternative_name"] = []any{}
+	}
+	// The provider reads cert.LB.ID — embed the LB object.
+	if lb, err := r.GetLB(lbID); err == nil {
+		data["lb"] = lb
+	}
 	return r.createSimple("lb_certificates", "lb_id", lbID, data)
 }
 
@@ -3395,13 +3724,7 @@ func (r *Repository) UpdateLBCertificate(id string, patch map[string]any) (map[s
 	if err != nil {
 		return nil, err
 	}
-	next := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		next[k] = v
-	}
+	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	if err := r.updateJSONByID("lb_certificates", "id", id, next); err != nil {
 		return nil, err
@@ -3460,18 +3783,12 @@ func (r *Repository) UpdateRegistryNamespace(id string, patch map[string]any) (m
 	if err != nil {
 		return nil, err
 	}
-	merged := cloneMap(current)
-	for k, v := range patch {
-		if k == "id" {
-			continue
-		}
-		merged[k] = v
-	}
-	merged["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("registry_namespaces", "id", id, merged); err != nil {
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("registry_namespaces", "id", id, next); err != nil {
 		return nil, err
 	}
-	return merged, nil
+	return next, nil
 }
 
 func (r *Repository) DeleteRegistryNamespace(id string) error {
@@ -3619,6 +3936,22 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	dnsZones, err := r.listJSON("dns_zones", "", "")
+	if err != nil {
+		return nil, err
+	}
+	vpcRoutes, err := r.listJSON("vpc_routes", "", "")
+	if err != nil {
+		return nil, err
+	}
+	vpcGateways, err := r.listJSON("vpc_public_gateways", "", "")
+	if err != nil {
+		return nil, err
+	}
+	vpcGatewayNetworks, err := r.listJSON("vpc_gateway_networks", "", "")
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"instance": map[string]any{
@@ -3630,6 +3963,9 @@ func (r *Repository) FullState() (map[string]any, error) {
 		"vpc": map[string]any{
 			"vpcs":             vpcs,
 			"private_networks": pns,
+			"routes":           vpcRoutes,
+			"gateways":         vpcGateways,
+			"gateway_networks": vpcGatewayNetworks,
 		},
 		"lb": map[string]any{
 			"ips":              lbIPs,
@@ -3669,7 +4005,8 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"groups":       iamGroups,
 		},
 		"domain": map[string]any{
-			"records": domainRecords,
+			"dns_zones": dnsZones,
+			"records":   domainRecords,
 		},
 		"block": map[string]any{
 			"volumes":   blockVolumes,
@@ -3715,9 +4052,24 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		vpcRoutes, err := r.listJSON("vpc_routes", "", "")
+		if err != nil {
+			return nil, err
+		}
+		vpcGateways, err := r.listJSON("vpc_public_gateways", "", "")
+		if err != nil {
+			return nil, err
+		}
+		vpcGatewayNetworks, err := r.listJSON("vpc_gateway_networks", "", "")
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"vpcs":             vpcs,
 			"private_networks": pns,
+			"routes":           vpcRoutes,
+			"gateways":         vpcGateways,
+			"gateway_networks": vpcGatewayNetworks,
 		}, nil
 	case "lb":
 		lbIPs, err := r.listJSON("lb_ips", "", "")
@@ -3884,12 +4236,17 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 			"ips": ipamIPs,
 		}, nil
 	case "domain":
+		dnsZones, err := r.listJSON("dns_zones", "", "")
+		if err != nil {
+			return nil, err
+		}
 		records, err := r.listJSON("domain_records", "", "")
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{
-			"records": records,
+			"dns_zones": dnsZones,
+			"records":   records,
 		}, nil
 	default:
 		return nil, models.ErrNotFound

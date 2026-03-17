@@ -1,5 +1,9 @@
 # BACKLOG
 
+## Next up (work in this order)
+
+1. **MW-28** — Fix `vpc_gateway_network` `enable_masquerade` drift
+
 Provider-compatibility work for mockway.
 
 Legend: `todo` | `in_progress` | `blocked` | `done`
@@ -39,12 +43,58 @@ The security-group drift fix is the template for this class of bug: the Terrafor
 | MW-15 | Systematic FK audit: map every parent-child reference across all services, write one negative e2e test per relationship (bad UUID → assert 404), fix every handler gap found | P1 | done | MW-11 |
 | MW-9 | Misconfigured examples: FK violations for LB, K8s, RDB | P3 | done | MW-3, MW-4, MW-5 |
 | MW-18 | K8s cluster upgrade/set-type/GetVersion, pool upgrade (provider calls these on version change) — K8s ACLs still todo | P2 | done | — |
-| MW-19 | Marketplace ListImages/GetImage/ListVersions/GetVersion (provider uses to resolve image IDs) | P2 | todo | — |
-| MW-20 | VPC routes and ACL rules | P2 | todo | — |
-| MW-21 | Domain DNS zone CRUD (CreateDNSZone, UpdateDNSZone, DeleteDNSZone) | P2 | todo | — |
+| MW-19 | Marketplace: proper label→UUID map for all image labels (current stub always returns the same UUID regardless of label) | P2 | done | — |
+| MW-20 | VPC gateway networks and routes (`scaleway_vpc_gateway_network`, `scaleway_vpc_route`, `scaleway_vpc_public_gateway`) | P2 | done | — |
+| MW-21 | Domain DNS zone CRUD (CreateDNSZone, UpdateDNSZone, DeleteDNSZone) | P3 | done | — |
+| MW-25 | Extract null-safe deep-merge helper (`patchMerge`) and use it in all ~30 Update functions — eliminates the class of bugs where providers send `null` for optional fields and nested-object patches wipe stored sub-fields | P1 | done | — |
+| MW-26 | Add `examples/updates/` CI suite — auto-discovers update scenarios (apply v1 → apply v2 → no-op plan check → destroy); catches update-field-name divergences and null-overwrite bugs before they reach prod | P1 | done | MW-25 |
+| MW-27 | Document proxy-capture workflow in AGENTS.md — when implementing or debugging a resource, run tofu against the real Scaleway API through the logging proxy to capture exact PATCH/POST bodies before implementing; prevents create-vs-update field name divergences like `disable_backup` vs `is_backup_schedule_disabled` | P2 | done | — |
+| MW-23 | Delete redundant individual `TestProvider*` e2e tests — all 12 are now covered by `TestExamplesWorkingIdempotency`; keeping them doubles e2e runtime for no added coverage | P2 | done | — |
+| MW-24 | Simplify CI retry loop — was working around parallel provider-cache race; race fixed by removing `t.Parallel()` from `TestExamplesWorkingIdempotency` | P2 | done | — |
 | MW-22 | Instance standalone volumes (`scaleway_instance_volume`) — POST/GET/LIST/PATCH/DELETE `/volumes` | P2 | done | — |
 | MW-10 | Document `--echo` mode in README | P3 | done | — |
 | MW-1 | Shell script idempotency harness over `examples/` dirs (manual debugging aid only — MW-11 covers CI) | P3 | done | MW-2 |
+| MW-28 | Fix `vpc_gateway_network` `enable_masquerade` drift — proxy-capture the real API response to find the correct field shape | P1 | todo | — |
+| MW-29 | Fix `scaleway_lb_ip` + `scaleway_lb` `ip_id` drift — explicit LB IP causes `ip_id` mismatch on second plan | P1 | done | — |
+| MW-30 | K8s version resolution on auto-upgrade toggle — not a bug; matches real Scaleway API behavior (minor version required with auto-upgrade, patch version without) | P2 | wontfix | — |
+| MW-31 | Full e2e coverage: add missing working examples + update examples for all supported resources (see detail below) | P1 | done | — |
+
+## MW-31 Full E2E Coverage
+
+**Goal**: every supported resource has a working example (apply → no-op plan → destroy) and every resource with an Update handler has an update example (apply v1 → no-op → apply v2 → no-op → destroy). Any bug found → fix the handler + add a regression test.
+
+**Missing working examples (4 resources, skip gateway network until MW-28 is fixed):**
+
+| Resource | Example name | Notes |
+|----------|-------------|-------|
+| `scaleway_lb_certificate` | `lb_with_certificate` | Needs LB + frontend + cert |
+| `scaleway_rdb_acl` | `rdb_with_acl` | Needs RDB instance + ACL rules |
+| `scaleway_iam_user` | `iam_user_group` | User + group + group membership |
+| `scaleway_iam_group` | (same as above) | Covered by `iam_user_group` |
+
+**Missing update examples (prioritised by risk — nested objects most likely to have patchMerge bugs):**
+
+| Resource | Example name | What to change v1→v2 |
+|----------|-------------|---------------------|
+| `scaleway_rdb_instance` | `update_rdb_instance` | `backup_schedule_disabled`, `name` |
+| `scaleway_k8s_cluster` | `update_k8s_cluster` | `name`, `tags` (avoid version/auto_upgrade — MW-30) |
+| `scaleway_vpc` | `update_vpc` | `name`, `tags` |
+| `scaleway_vpc_private_network` | `update_private_network` | `name`, `tags` |
+| `scaleway_iam_application` | `update_iam_application` | `name`, `description` |
+| `scaleway_iam_policy` | `update_iam_policy` | `name`, `description` |
+| `scaleway_iam_ssh_key` | `update_iam_ssh_key` | `name` |
+| `scaleway_redis_cluster` | `update_redis_cluster` | `name`, `tags` |
+| `scaleway_registry_namespace` | `update_registry_namespace` | `description`, `is_public` |
+| `scaleway_instance_security_group` | `update_security_group` | `name`, `inbound_default_policy` |
+| `scaleway_instance_ip` | `update_instance_ip` | `tags` |
+| `scaleway_block_volume` | `update_block_volume` | `name`, `tags` |
+| `scaleway_domain_zone` | `update_domain_zone` | `project_id` |
+| `scaleway_vpc_route` | `update_vpc_route` | `description`, `tags` |
+| `scaleway_lb` | `update_lb` | `name`, `description` |
+
+**Execution**: for each example, write the HCL, run the idempotency check, fix any bugs found, add a handler regression test per bug. Each example auto-registers in CI via `TestExamplesWorkingIdempotency` / `TestExamplesUpdatesIdempotency`.
+
+---
 
 ## MW-17 Missing UPDATE Endpoints
 

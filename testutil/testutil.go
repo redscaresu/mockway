@@ -47,6 +47,16 @@ func DoList(t *testing.T, ts *httptest.Server, path string) (int, map[string]any
 	return doJSON(t, ts, http.MethodGet, path, nil)
 }
 
+func DoPatch(t *testing.T, ts *httptest.Server, path string, body any) (int, map[string]any) {
+	t.Helper()
+	return doJSON(t, ts, http.MethodPatch, path, body)
+}
+
+func DoPut(t *testing.T, ts *httptest.Server, path string, body any) (int, map[string]any) {
+	t.Helper()
+	return doJSON(t, ts, http.MethodPut, path, body)
+}
+
 func DoDelete(t *testing.T, ts *httptest.Server, path string) int {
 	t.Helper()
 	status, _ := doJSON(t, ts, http.MethodDelete, path, nil)

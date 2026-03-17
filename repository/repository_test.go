@@ -581,3 +581,84 @@ func TestServiceStateFailsOnCorruptRowJSON(t *testing.T) {
 	_, err = repo.ServiceState("instance")
 	require.Error(t, err)
 }
+
+func TestPatchMergePreservesNestedFields(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	// Create an LB so the backend FK is satisfied.
+	lbIP, err := repo.CreateLBIP("fr-par-1", map[string]any{"type": "ipv4"})
+	require.NoError(t, err)
+	lb, err := repo.CreateLB("fr-par-1", map[string]any{
+		"name":  "test-lb",
+		"ip_id": lbIP["id"],
+	})
+	require.NoError(t, err)
+	lbID := lb["id"].(string)
+
+	// Create a backend with a nested health_check object.
+	backend, err := repo.CreateBackend(map[string]any{
+		"lb_id":            lbID,
+		"name":             "be1",
+		"forward_protocol": "tcp",
+		"forward_port":     float64(8080),
+		"health_check": map[string]any{
+			"port":              float64(8080),
+			"check_delay":       "60s",
+			"check_timeout":     "30s",
+			"check_max_retries": float64(3),
+			"tcp_config":        map[string]any{},
+		},
+	})
+	require.NoError(t, err)
+	backendID := backend["id"].(string)
+
+	// Patch only check_max_retries inside health_check; other sub-fields must survive.
+	updated, err := repo.UpdateBackend(backendID, map[string]any{
+		"health_check": map[string]any{
+			"check_max_retries": float64(5),
+			"tcp_config":        nil, // null sub-field must not wipe stored value
+		},
+	})
+	require.NoError(t, err)
+
+	hc, ok := updated["health_check"].(map[string]any)
+	require.True(t, ok, "health_check should be a map")
+	require.Equal(t, float64(5), hc["check_max_retries"], "patched field should update")
+	require.Equal(t, "60s", hc["check_delay"], "unpatched sub-field should survive")
+	require.Equal(t, "30s", hc["check_timeout"], "unpatched sub-field should survive")
+	require.Equal(t, float64(8080), hc["port"], "unpatched sub-field should survive")
+	// tcp_config was null in patch — stored value (empty map) should be preserved.
+	require.NotNil(t, hc["tcp_config"], "null sub-field in patch should not wipe stored value")
+}
+
+func TestPatchMergeSkipsTopLevelNull(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	cluster, err := repo.CreateCluster("fr-par", map[string]any{
+		"name":    "k8s-test",
+		"version": "1.28",
+		"cni":     "cilium",
+		"auto_upgrade": map[string]any{
+			"enabled":                true,
+			"maintenance_window_day": "monday",
+		},
+	})
+	require.NoError(t, err)
+	clusterID := cluster["id"].(string)
+
+	// Patch with top-level null for auto_upgrade — should not wipe it.
+	updated, err := repo.UpdateCluster(clusterID, map[string]any{
+		"name":         "k8s-renamed",
+		"auto_upgrade": nil,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "k8s-renamed", updated["name"])
+
+	au, ok := updated["auto_upgrade"].(map[string]any)
+	require.True(t, ok, "auto_upgrade should survive a null patch")
+	require.Equal(t, true, au["enabled"], "auto_upgrade.enabled should survive")
+}

@@ -43,19 +43,7 @@ jobs:
         run: go test ./... -v
 
       - name: Run provider E2E smoke test
-        run: |
-          set -euo pipefail
-          attempts=3
-          for i in $(seq 1 "$attempts"); do
-            echo "Provider E2E attempt $i/$attempts"
-            if go test -tags provider_e2e ./e2e -v 2>&1 | tee provider-e2e.log; then
-              exit 0
-            fi
-            if [ "$i" -lt "$attempts" ]; then
-              sleep 10
-            fi
-          done
-          exit 1
+        run: go test -tags provider_e2e ./e2e -v 2>&1 | tee provider-e2e.log
 
       - name: Upload provider E2E logs on failure
         if: failure()

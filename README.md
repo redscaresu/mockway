@@ -61,7 +61,7 @@ Each row reflects a verified `apply → plan (no-op) → destroy` cycle against 
 
 | Service | API prefix | Terraform resources | Status | Example |
 |---------|-----------|---------------------|--------|---------|
-| Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic`, `scaleway_instance_volume` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance) |
+| Instance | `/instance/v1/zones/{zone}/` | `scaleway_instance_server`, `scaleway_instance_security_group` (with inbound rules), `scaleway_instance_ip`, `scaleway_instance_private_nic`, `scaleway_instance_volume` | ✅ verified | [`examples/working/basic_instance`](examples/working/basic_instance), [`examples/working/instance_volume`](examples/working/instance_volume) |
 | IAM | `/iam/v1alpha1/` | `scaleway_iam_application`, `scaleway_iam_api_key`, `scaleway_iam_policy` (with rules), `scaleway_iam_ssh_key` | ✅ verified | [`examples/working/iam_full`](examples/working/iam_full) |
 | Load Balancer | `/lb/v1/zones/{zone}/` | `scaleway_lb`, `scaleway_lb_backend`, `scaleway_lb_frontend`, `scaleway_lb_acl`, `scaleway_lb_route` | ✅ verified | [`examples/working/load_balancer`](examples/working/load_balancer), [`examples/working/lb_with_acl`](examples/working/lb_with_acl), [`examples/working/lb_with_route`](examples/working/lb_with_route) |
 | Kubernetes | `/k8s/v1/regions/{region}/` | `scaleway_k8s_cluster` (with auto-upgrade, version upgrade), `scaleway_k8s_pool` | ✅ verified | [`examples/working/kubernetes_cluster`](examples/working/kubernetes_cluster), [`examples/working/k8s_with_auto_upgrade`](examples/working/k8s_with_auto_upgrade) |
@@ -69,11 +69,12 @@ Each row reflects a verified `apply → plan (no-op) → destroy` cycle against 
 | Redis | `/redis/v1/zones/{zone}/` | `scaleway_redis_cluster` | ✅ verified | [`examples/working/redis_cluster`](examples/working/redis_cluster) |
 | Registry | `/registry/v1/regions/{region}/` | `scaleway_registry_namespace` | ✅ verified | [`examples/working/registry_namespace`](examples/working/registry_namespace) |
 | Marketplace | `/marketplace/v2/` | (image label resolution — used by Instance) | ✅ verified | — |
-| VPC | `/vpc/v1/` | `scaleway_vpc`, `scaleway_vpc_private_network` | ⚠️ handler only | [`examples/working/vpc_and_private_network`](examples/working/vpc_and_private_network) |
+| VPC | `/vpc/v1/`, `/vpc/v2/` | `scaleway_vpc`, `scaleway_vpc_private_network`, `scaleway_vpc_route` | ⚠️ handler only | [`examples/working/vpc_and_private_network`](examples/working/vpc_and_private_network) |
+| VPC GW | `/vpc-gw/v2/` | `scaleway_vpc_public_gateway`, `scaleway_vpc_gateway_network` | ⚠️ handler only | — |
 | Account (legacy) | `/account/v2alpha1/` | `scaleway_account_ssh_key` | ✅ verified | — |
 | IPAM | `/ipam/v1/` | list stub | ⚠️ stub | — |
-| Domain | `/domain/v2beta1/` | list + patch stubs | ⚠️ stub | — |
-| Block | `/block/v1alpha1/` | delegates to Instance volumes | ⚠️ partial | — |
+| Domain | `/domain/v2beta1/` | `scaleway_domain_zone`, `scaleway_domain_record` | ⚠️ handler only | — |
+| Block | `/block/v1alpha1/` | `scaleway_block_volume`, block snapshots | ✅ verified | — |
 
 ## What mockway catches
 
@@ -119,6 +120,7 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 - **IAM rules are policy-scoped.** `GET /iam/v1alpha1/rules?policy_id=<id>` returns rules stored during policy create. `GET /iam/v1alpha1/rules` without a `policy_id` always returns an empty list.
 - **User data is discarded.** `PATCH /servers/{id}/user_data/{key}` accepts the body but does not store it. `GET /servers/{id}/user_data` always returns an empty list.
 - **Unimplemented routes return 501.** Any route not explicitly handled returns `501 Not Implemented` with a log line — useful for discovering which endpoints your Terraform config needs.
+- **VPC gateway network `enable_masquerade` drift.** `scaleway_vpc_gateway_network` with `enable_masquerade = true` causes a perpetual plan diff — the GET response shape doesn't match what the provider expects. Needs proxy-capture investigation against the real API.
 
 ## Not Implemented
 
@@ -152,7 +154,9 @@ Hot-plug operations (`attach-volume`, `detach-volume`) are also not implemented 
 |---|---|---|
 | `scaleway_vpc` | ✅ full CRUD | — |
 | `scaleway_vpc_private_network` | ✅ full CRUD | — |
-| `scaleway_vpc_route` | ❌ not implemented | `POST/GET/PATCH/DELETE /vpc/v2/routes` |
+| `scaleway_vpc_route` | ✅ full CRUD | — |
+| `scaleway_vpc_public_gateway` | ✅ full CRUD | — |
+| `scaleway_vpc_gateway_network` | ✅ full CRUD | — |
 | `scaleway_vpc_acl` | ❌ not implemented | `GET/PUT /vpc/v2/vpcs/{id}/acl-rules` |
 
 ### Redis
@@ -202,7 +206,7 @@ Hot-plug operations (`attach-volume`, `detach-volume`) are also not implemented 
 |---|---|---|
 | `scaleway_registry_namespace` | ✅ full CRUD | — |
 | Registry images / tags | ❌ not implemented | Not Terraform-managed resources |
-| Domain DNS (`scaleway_domain_zone`, `scaleway_domain_record`) | ⚠️ stub | List + patch stubs only; full zone CRUD not implemented |
+| Domain DNS (`scaleway_domain_zone`, `scaleway_domain_record`) | ✅ full CRUD | Zone create/update/delete + record patch/list |
 | Block storage (`scaleway_block_volume`) | ✅ full CRUD | — |
 | Block snapshots | ✅ full CRUD | — |
 | IPAM (`scaleway_ipam_ip`) | ⚠️ stub | List stub only |
