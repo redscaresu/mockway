@@ -21,6 +21,15 @@ func (app *Application) CreateDNSZone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (app *Application) GetDNSZone(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.GetDNSZone(chi.URLParam(r, "dns_zone"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (app *Application) ListDNSZones(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
 	dnsZone := r.URL.Query().Get("dns_zone")

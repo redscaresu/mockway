@@ -425,7 +425,7 @@ func (app *Application) AddIAMGroupMember(w http.ResponseWriter, r *http.Request
 	userID, _ := body["user_id"].(string)
 	out, err := app.repo.AddIAMGroupMember(chi.URLParam(r, "group_id"), userID)
 	if err != nil {
-		writeDomainError(w, err)
+		writeCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -418,6 +418,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 		r.Route("/domain/v2beta1", func(r chi.Router) {
 			r.Post("/dns-zones", app.CreateDNSZone)
 			r.Get("/dns-zones", app.ListDNSZones)
+			r.Get("/dns-zones/{dns_zone}", app.GetDNSZone)
 			r.Patch("/dns-zones/{dns_zone}", app.UpdateDNSZone)
 			r.Delete("/dns-zones/{dns_zone}", app.DeleteDNSZone)
 			r.Patch("/dns-zones/{dns_zone}/records", app.PatchDomainRecords)
