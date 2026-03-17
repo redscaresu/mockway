@@ -2728,12 +2728,20 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	// Track whether the patch explicitly sets a security_group_id.
+	_, patchedSG := patch["security_group_id"]
+	if !patchedSG {
+		_, patchedSG = patch["security_group"]
+	}
 	var sgIDArg any
 	if sgID != "" {
-		// Only set the FK column if the security group actually exists.
-		// Avoids a FK constraint violation when the stored security_group object
-		// is a placeholder whose ID was never inserted into instance_security_groups.
-		if _, sgErr := r.GetSecurityGroup(sgID); sgErr == nil {
+		if _, sgErr := r.GetSecurityGroup(sgID); sgErr != nil {
+			if patchedSG {
+				// The caller explicitly referenced a non-existent SG; fail with 404.
+				return nil, models.ErrNotFound
+			}
+			// Pre-existing placeholder SG — leave FK NULL so the UPDATE succeeds.
+		} else {
 			sgIDArg = sgID
 		}
 	}
@@ -3213,8 +3221,17 @@ func (r *Repository) UpdateBlockVolume(id string, patch map[string]any) (map[str
 		}
 		next["specs"] = map[string]any{"perf_iops": iops}
 	}
-	if err := r.updateJSONByID("block_volumes", "id", id, next); err != nil {
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	zone, _ := next["zone"].(string)
+	_, err = r.db.Exec(
+		`UPDATE block_volumes SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3318,8 +3335,17 @@ func (r *Repository) UpdateIPAMIP(id string, patch map[string]any) (map[string]a
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("ipam_ips", "id", id, next); err != nil {
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	region, _ := next["region"].(string)
+	_, err = r.db.Exec(
+		`UPDATE ipam_ips SET data = ?, region = ? WHERE id = ?`,
+		b, region, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3420,8 +3446,18 @@ func (r *Repository) UpdateRDBSnapshot(id string, patch map[string]any) (map[str
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("rdb_snapshots", "id", id, next); err != nil {
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	region, _ := next["region"].(string)
+	instanceID, _ := next["instance_id"].(string)
+	_, err = r.db.Exec(
+		`UPDATE rdb_snapshots SET data = ?, instance_id = ?, region = ? WHERE id = ?`,
+		b, instanceID, region, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3487,8 +3523,18 @@ func (r *Repository) UpdateRDBBackup(id string, patch map[string]any) (map[strin
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("rdb_backups", "id", id, next); err != nil {
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	region, _ := next["region"].(string)
+	instanceID, _ := next["instance_id"].(string)
+	_, err = r.db.Exec(
+		`UPDATE rdb_backups SET data = ?, instance_id = ?, region = ? WHERE id = ?`,
+		b, instanceID, region, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3899,8 +3945,17 @@ func (r *Repository) UpdateRegistryNamespace(id string, patch map[string]any) (m
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("registry_namespaces", "id", id, next); err != nil {
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	region, _ := next["region"].(string)
+	_, err = r.db.Exec(
+		`UPDATE registry_namespaces SET data = ?, region = ? WHERE id = ?`,
+		b, region, id,
+	)
+	if err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
