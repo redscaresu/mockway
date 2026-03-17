@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -74,15 +75,15 @@ func runEcho(port int) error {
 }
 
 func logRequestAndOK(w http.ResponseWriter, r *http.Request) {
+	// Log method and path only — avoid logging header values which may
+	// contain credentials (X-Auth-Token, Authorization).
+	log.Printf("[echo] %s %s", r.Method, r.URL.Path)
 	keys := make([]string, 0, len(r.Header))
 	for k := range r.Header {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	log.Printf("[echo] %s %s", r.Method, r.URL.Path)
-	for _, k := range keys {
-		log.Printf("[echo] header %s=%q", k, r.Header.Get(k))
-	}
+	log.Printf("[echo] headers: %s", strings.Join(keys, ", "))
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }

@@ -4306,7 +4306,12 @@ func BuildRDBEndpointsFromInit(initEndpoints any, engine any) ([]any, error) {
 	port := rdbPortFromEngine(engine)
 	list, ok := initEndpoints.([]any)
 	if !ok || len(list) == 0 {
-		return []any{map[string]any{"ip": fakePublicIP(), "port": port}}, nil
+		return []any{map[string]any{
+			"id":            newID(),
+			"ip":            fakePublicIP(),
+			"port":          port,
+			"load_balancer": map[string]any{},
+		}}, nil
 	}
 	result := make([]any, 0, len(list))
 	for _, item := range list {

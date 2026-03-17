@@ -21,13 +21,16 @@ func (app *Application) CreateRDBInstance(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid init_endpoints", "type": "invalid_argument"})
 			return
 		}
-		if len(endpoints) > 0 {
-			first, _ := endpoints[0].(map[string]any)
-			if pnObj, ok := first["private_network"].(map[string]any); ok {
+		for _, ep := range endpoints {
+			epMap, _ := ep.(map[string]any)
+			if pnObj, ok := epMap["private_network"].(map[string]any); ok {
 				pnID, _ := pnObj["id"].(string)
+				if pnID == "" {
+					continue
+				}
 				exists, err := app.repo.Exists("private_networks", "id", pnID)
 				if err != nil {
-					writeDomainError(w, err)
+					writeCreateError(w, err)
 					return
 				}
 				if !exists {
