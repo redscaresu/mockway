@@ -1839,8 +1839,21 @@ func (r *Repository) UpdateCluster(id string, patch map[string]any) (map[string]
 		next["auto_upgrade"] = au
 	}
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("k8s_clusters", "id", id, next); err != nil {
+	// Keep region and private_network_id SQL columns in sync.
+	region, _ := next["region"].(string)
+	var pnIDArg any
+	if pnID, ok := next["private_network_id"].(string); ok && pnID != "" {
+		pnIDArg = pnID
+	}
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE k8s_clusters SET data = ?, region = ?, private_network_id = ? WHERE id = ?`,
+		b, region, pnIDArg, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -1937,8 +1950,18 @@ func (r *Repository) UpdatePool(id string, patch map[string]any) (map[string]any
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("k8s_pools", "id", id, next); err != nil {
+	// Keep cluster_id and region SQL columns in sync.
+	clusterID, _ := next["cluster_id"].(string)
+	region, _ := next["region"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE k8s_pools SET data = ?, cluster_id = ?, region = ? WHERE id = ?`,
+		b, clusterID, region, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
