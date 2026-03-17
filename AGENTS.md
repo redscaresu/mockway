@@ -304,6 +304,22 @@ go test -tags provider_e2e ./e2e -run TestExamplesUpdatesIdempotency -v   # upda
 
 **Idempotency is the hardest correctness property**: a passing `apply` does not mean the handler is correct. Run the no-op plan check. If it exits 2 (drift), the GET response shape does not round-trip through the provider. See "Common drift causes" above.
 
+## Common Bug Patterns (from code review)
+
+These recurring patterns have been found across multiple review cycles. Check for them when adding or modifying handlers:
+
+**1. Wrong error helper on create paths**: All Create/Attach/Set handlers must use `writeCreateError(w, err)`, not `writeDomainError(w, err)`. The difference: `writeCreateError` returns `"referenced resource not found"` on 404 (FK violation on create), while `writeDomainError` returns `"resource not found"` (the resource itself is missing). Wrong choice breaks provider error handling.
+
+**2. SQL column desync on update**: Every `Update*` function that writes to a table with extracted SQL columns (FK refs, indexed fields like `region`, `vpc_id`, `cluster_id`) must sync those columns explicitly. Using `updateJSONByID` alone only writes the JSON blob — the SQL columns stay stale. This breaks `listJSON` filtering, FK enforcement, and cascade behavior. See the SQL column sync rule below.
+
+**3. Payload field name variations**: The Scaleway provider changes field names between versions (e.g. `user_ids` → `user_id`, `enable` → `enabled`). Handlers should accept both forms to avoid silently dropping data. A common symptom: a handler reads `body["user_ids"]` but the provider sends `body["user_id"]`, causing the handler to treat the request as empty and delete all existing data.
+
+**4. Truncating multi-item lists**: When processing arrays from request bodies (e.g. `init_endpoints`, `rules`), process all items — not just `list[0]`. Truncating drops user-provided state and skips FK validation for later entries.
+
+**5. Response encoding mismatches**: Fields typed as `[]byte` in the Scaleway Go SDK (like certificate `content`) must be base64-encoded in JSON responses. Raw PEM/binary strings cause decode failures. Check: `GetRDBCertificate`, `GetRedisCertificate`, and any new certificate endpoint.
+
+**6. Reset must include all tables**: When adding a new table to `init()`, also add it to `Reset()`. Missing tables leak state across `/mock/reset` calls and cause nondeterministic test behavior.
+
 ## Update Handler Pattern
 
 All `Update*` repository functions use the `patchMerge` helper for null-safe deep-merge:

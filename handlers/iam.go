@@ -452,7 +452,13 @@ func (app *Application) SetIAMGroupMembers(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
+	// Accept both "user_ids" (plural, older providers) and "user_id" (singular, newer).
 	rawIDs, _ := body["user_ids"].([]any)
+	if rawIDs == nil {
+		if single, ok := body["user_id"].(string); ok && single != "" {
+			rawIDs = []any{single}
+		}
+	}
 	userIDs := make([]string, 0, len(rawIDs))
 	for _, v := range rawIDs {
 		if s, ok := v.(string); ok {

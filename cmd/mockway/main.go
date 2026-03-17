@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -43,7 +44,14 @@ func run() error {
 	r.NotFound(handlers.UnimplementedHandler)
 	r.MethodNotAllowed(handlers.UnimplementedHandler)
 
-	return http.ListenAndServe(fmt.Sprintf(":%d", *port), r)
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", *port),
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 func runEcho(port int) error {
@@ -55,7 +63,14 @@ func runEcho(port int) error {
 	r.MethodFunc(http.MethodDelete, "/*", logRequestAndOK)
 	r.MethodFunc(http.MethodHead, "/*", logRequestAndOK)
 	r.MethodFunc(http.MethodOptions, "/*", logRequestAndOK)
-	return http.ListenAndServe(fmt.Sprintf(":%d", port), r)
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 func logRequestAndOK(w http.ResponseWriter, r *http.Request) {

@@ -4308,28 +4308,39 @@ func BuildRDBEndpointsFromInit(initEndpoints any, engine any) ([]any, error) {
 	if !ok || len(list) == 0 {
 		return []any{map[string]any{"ip": fakePublicIP(), "port": port}}, nil
 	}
-	first, ok := list[0].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("invalid init_endpoints")
+	result := make([]any, 0, len(list))
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid init_endpoints")
+		}
+		pn, ok := entry["private_network"].(map[string]any)
+		if !ok {
+			// No private_network block — public endpoint.
+			result = append(result, map[string]any{
+				"id":            newID(),
+				"ip":            fakePublicIP(),
+				"port":          port,
+				"load_balancer": map[string]any{},
+			})
+			continue
+		}
+		// Accept both "id" and "private_network_id" as the PN identifier.
+		pnID, _ := pn["id"].(string)
+		if pnID == "" {
+			pnID, _ = pn["private_network_id"].(string)
+		}
+		if pnID == "" {
+			return nil, fmt.Errorf("invalid init_endpoints: private_network present but missing id")
+		}
+		result = append(result, map[string]any{
+			"id":              newID(),
+			"ip":              fakePrivateIP(),
+			"port":            port,
+			"private_network": map[string]any{"id": pnID},
+		})
 	}
-	pn, ok := first["private_network"].(map[string]any)
-	if !ok {
-		// If no private_network block, return a public endpoint.
-		return []any{map[string]any{"ip": fakePublicIP(), "port": port}}, nil
-	}
-	// Accept both "id" and "private_network_id" as the PN identifier.
-	pnID, _ := pn["id"].(string)
-	if pnID == "" {
-		pnID, _ = pn["private_network_id"].(string)
-	}
-	if pnID == "" {
-		return nil, fmt.Errorf("invalid init_endpoints: private_network present but missing id")
-	}
-	return []any{map[string]any{
-		"ip":              fakePrivateIP(),
-		"port":            port,
-		"private_network": map[string]any{"id": pnID},
-	}}, nil
+	return result, nil
 }
 
 func rdbPortFromEngine(engine any) float64 {
