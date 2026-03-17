@@ -2207,8 +2207,17 @@ func (r *Repository) DeleteRDBUser(instanceID, name string) error {
 }
 
 func (r *Repository) SetRDBPrivileges(instanceID string, privileges []any) ([]map[string]any, error) {
-	// Replace all privileges for this instance with the provided set.
-	if _, err := r.db.Exec("DELETE FROM rdb_privileges WHERE instance_id = ?", instanceID); err != nil {
+	// Verify instance exists.
+	if _, err := r.getJSONByID("rdb_instances", "id", instanceID); err != nil {
+		return nil, err
+	}
+	// Replace all privileges atomically.
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM rdb_privileges WHERE instance_id = ?", instanceID); err != nil {
 		return nil, err
 	}
 	result := make([]map[string]any, 0, len(privileges))
@@ -2220,14 +2229,20 @@ func (r *Repository) SetRDBPrivileges(instanceID string, privileges []any) ([]ma
 		p = cloneMap(p)
 		userName, _ := p["user_name"].(string)
 		dbName, _ := p["database_name"].(string)
-		if err := r.insertJSON("rdb_privileges", []colVal{
-			{name: "instance_id", val: instanceID},
-			{name: "user_name", val: userName},
-			{name: "database_name", val: dbName},
-		}, p); err != nil {
+		b, err := marshalData(p)
+		if err != nil {
 			return nil, err
 		}
+		if _, err := tx.Exec(
+			"INSERT INTO rdb_privileges (instance_id, user_name, database_name, data) VALUES (?, ?, ?, ?)",
+			instanceID, userName, dbName, b,
+		); err != nil {
+			return nil, mapInsertSQLError(err)
+		}
 		result = append(result, p)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
