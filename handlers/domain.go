@@ -49,9 +49,15 @@ func (app *Application) ListDNSZones(w http.ResponseWriter, r *http.Request) {
 				hasExactMatch = true
 				filtered = append(filtered, z)
 			}
-			if len(parts) == 2 && d == parts[1] && sub == "" {
-				hasParentDomain = true
-				filtered = append(filtered, z)
+		}
+		if !hasExactMatch {
+			for _, z := range zones {
+				sub, _ := z["subdomain"].(string)
+				d, _ := z["domain"].(string)
+				if len(parts) == 2 && d == parts[1] && sub == "" {
+					hasParentDomain = true
+					filtered = append(filtered, z)
+				}
 			}
 		}
 		if !hasExactMatch && hasParentDomain && len(parts) == 2 && parts[0] != "" {

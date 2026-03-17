@@ -959,8 +959,16 @@ func (r *Repository) UpdateVPCPublicGateway(id string, patch map[string]any) (ma
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("vpc_public_gateways", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE vpc_public_gateways SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -1521,8 +1529,16 @@ func (r *Repository) UpdateLB(id string, patch map[string]any) (map[string]any, 
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lbs", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lbs SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -1624,8 +1640,16 @@ func (r *Repository) UpdateFrontend(id string, patch map[string]any) (map[string
 		next["backend"] = backend
 	}
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lb_frontends", "id", id, next); err != nil {
+	lbID, _ := next["lb_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_frontends SET data = ?, lb_id = ? WHERE id = ?`,
+		b, lbID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -1689,8 +1713,16 @@ func (r *Repository) UpdateBackend(id string, patch map[string]any) (map[string]
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lb_backends", "id", id, next); err != nil {
+	lbID, _ := next["lb_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_backends SET data = ?, lb_id = ? WHERE id = ?`,
+		b, lbID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -2081,8 +2113,16 @@ func (r *Repository) UpdateRDBInstance(id string, patch map[string]any) (map[str
 		}
 	}
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("rdb_instances", "id", id, next); err != nil {
+	region, _ := next["region"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE rdb_instances SET data = ?, region = ? WHERE id = ?`,
+		b, region, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -2363,7 +2403,7 @@ func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[st
 		}
 		if del, ok := change["delete"].(map[string]any); ok {
 			if id, ok := del["id"].(string); ok && id != "" {
-				_ = r.deleteBy("domain_records", "id = ?", id)
+				_ = r.deleteBy("domain_records", "id = ? AND dns_zone = ?", id, dnsZone)
 			}
 		}
 		if set, ok := change["set"].(map[string]any); ok {
@@ -2929,8 +2969,16 @@ func (r *Repository) UpdateRedisCluster(id string, patch map[string]any) (map[st
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("redis_clusters", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE redis_clusters SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3207,8 +3255,22 @@ func (r *Repository) UpdateBlockSnapshot(id string, patch map[string]any) (map[s
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("block_snapshots", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	var volumeIDArg any
+	if pv, ok := next["parent_volume"].(map[string]any); ok {
+		if vid, _ := pv["id"].(string); vid != "" {
+			volumeIDArg = vid
+		}
+	}
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE block_snapshots SET data = ?, zone = ?, volume_id = ? WHERE id = ?`,
+		b, zone, volumeIDArg, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3626,8 +3688,16 @@ func (r *Repository) UpdateLBACL(id string, patch map[string]any) (map[string]an
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lb_acls", "id", id, next); err != nil {
+	frontendID, _ := next["frontend_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_acls SET data = ?, frontend_id = ? WHERE id = ?`,
+		b, frontendID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3691,8 +3761,16 @@ func (r *Repository) UpdateLBRoute(id string, patch map[string]any) (map[string]
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lb_routes", "id", id, next); err != nil {
+	lbID, _ := next["lb_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_routes SET data = ?, lb_id = ? WHERE id = ?`,
+		b, lbID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3754,8 +3832,16 @@ func (r *Repository) UpdateLBCertificate(id string, patch map[string]any) (map[s
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("lb_certificates", "id", id, next); err != nil {
+	lbID, _ := next["lb_id"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_certificates SET data = ?, lb_id = ? WHERE id = ?`,
+		b, lbID, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
