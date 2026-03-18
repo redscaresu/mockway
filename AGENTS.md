@@ -320,6 +320,26 @@ These recurring patterns have been found across multiple review cycles. Check fo
 
 **6. Reset must include all tables**: When adding a new table to `init()`, also add it to `Reset()`. Missing tables leak state across `/mock/reset` calls and cause nondeterministic test behavior.
 
+**7. Cross-resource state sync on create**: When a Create handler accepts a reference to another resource (e.g. `ip_id` on CreateLB, `public_ips` on CreateServer), the *referenced* resource's stored state must also be updated to reflect the association. Otherwise GET on the referenced resource returns stale data (e.g. `lb_id: null` on an IP that's attached to an LB).
+
+**8. Multi-step writes must be atomic**: Any operation that deletes then re-inserts (e.g. SetRDBPrivileges, SetIAMRules) must use a transaction. Without one, a failure during insert leaves the delete committed — corrupting state silently.
+
+**9. Validate referenced resources exist on set/replace operations**: Set-style handlers (PUT that replaces all items) should verify the parent resource exists before modifying child state. Without this, `PUT /instances/{missing-id}/privileges` with an empty body silently succeeds instead of returning 404.
+
+## Checklist for new handlers
+
+When adding any new handler, verify ALL of these:
+
+- [ ] Create/Attach/Set handlers use `writeCreateError`, not `writeDomainError`
+- [ ] Update functions sync ALL extracted SQL columns (not just JSON blob)
+- [ ] New tables added to both `init()` and `Reset()`
+- [ ] New tables included in `FullState()` and `ServiceState()`
+- [ ] Cross-resource references updated in BOTH directions on create
+- [ ] Multi-step mutations wrapped in transactions
+- [ ] Array inputs processed fully (not just `[0]`)
+- [ ] `[]byte` SDK fields base64-encoded in JSON responses
+- [ ] Working example + update example added and passing
+
 ## Update Handler Pattern
 
 All `Update*` repository functions use the `patchMerge` helper for null-safe deep-merge:
