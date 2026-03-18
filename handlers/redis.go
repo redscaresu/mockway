@@ -100,9 +100,7 @@ func (app *Application) DeleteRedisCluster(w http.ResponseWriter, r *http.Reques
 		writeDomainError(w, err)
 		return
 	}
-	// The real Scaleway Redis DELETE /clusters/{id} returns 204 No Content.
-	_ = out
-	writeNoContent(w)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (app *Application) SetRedisACLRules(w http.ResponseWriter, r *http.Request) {

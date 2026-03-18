@@ -1087,8 +1087,16 @@ func (r *Repository) UpdateSecurityGroup(id string, patch map[string]any) (map[s
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
-	if err := r.updateJSONByID("instance_security_groups", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE instance_security_groups SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -1337,8 +1345,16 @@ func (r *Repository) UpdateInstanceVolume(id string, patch map[string]any) (map[
 	}
 	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
-	if err := r.updateJSONByID("instance_volumes", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE instance_volumes SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -2810,8 +2826,16 @@ func (r *Repository) UpdateLBIP(id string, patch map[string]any) (map[string]any
 		return nil, err
 	}
 	next := patchMerge(current, patch, "id")
-	if err := r.updateJSONByID("lb_ips", "id", id, next); err != nil {
+	zone, _ := next["zone"].(string)
+	b, err := marshalData(next)
+	if err != nil {
 		return nil, err
+	}
+	if _, err := r.db.Exec(
+		`UPDATE lb_ips SET data = ?, zone = ? WHERE id = ?`,
+		b, zone, id,
+	); err != nil {
+		return nil, mapInsertSQLError(err)
 	}
 	return next, nil
 }
@@ -3996,6 +4020,10 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	instanceVolumes, err := r.listJSON("instance_volumes", "", "")
+	if err != nil {
+		return nil, err
+	}
 	vpcs, err := r.listJSON("vpcs", "", "")
 	if err != nil {
 		return nil, err
@@ -4143,6 +4171,7 @@ func (r *Repository) FullState() (map[string]any, error) {
 			"ips":             ips,
 			"private_nics":    nics,
 			"security_groups": sgs,
+			"volumes":         instanceVolumes,
 		},
 		"vpc": map[string]any{
 			"vpcs":             vpcs,
@@ -4221,11 +4250,16 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		volumes, err := r.listJSON("instance_volumes", "", "")
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"servers":         servers,
 			"ips":             ips,
 			"private_nics":    nics,
 			"security_groups": sgs,
+			"volumes":         volumes,
 		}, nil
 	case "vpc":
 		vpcs, err := r.listJSON("vpcs", "", "")

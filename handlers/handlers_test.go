@@ -3254,9 +3254,9 @@ func TestRedisClusterLifecycle(t *testing.T) {
 	require.Equal(t, float64(1), list["total_count"])
 	require.Len(t, list["clusters"].([]any), 1)
 
-	// Delete cluster — real Scaleway Redis API returns 204 No Content.
+	// Delete cluster — returns 200 with deleted resource JSON (same as RDB/registry pattern).
 	status = testutil.DoDelete(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID)
-	require.Equal(t, 204, status)
+	require.Equal(t, 200, status)
 
 	// Confirm deleted.
 	status, _ = testutil.DoGet(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID)
