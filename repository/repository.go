@@ -1220,7 +1220,22 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	if sgID != "" {
 		extras = append(extras, colVal{name: "security_group_id", val: sgID})
 	}
-	return r.createSimple("instance_servers", "zone", zone, data, extras...)
+	result, err := r.createSimple("instance_servers", "zone", zone, data, extras...)
+	if err != nil {
+		return nil, err
+	}
+	// Attach public IPs to this server in the instance_ips table.
+	serverID := result["id"].(string)
+	if rawIPs, ok := data["public_ips"].([]any); ok {
+		for _, raw := range rawIPs {
+			if ipMap, ok := raw.(map[string]any); ok {
+				if ipID, ok := ipMap["id"].(string); ok && ipID != "" {
+					_, _ = r.UpdateIP(ipID, map[string]any{"server": serverID})
+				}
+			}
+		}
+	}
+	return result, nil
 }
 func (r *Repository) GetServer(id string) (map[string]any, error) {
 	return r.getJSONByID("instance_servers", "id", id)
@@ -1535,6 +1550,10 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 
 	if err := r.insertJSON("lbs", []colVal{{name: "id", val: id}, {name: "zone", val: zone}}, data); err != nil {
 		return nil, err
+	}
+	// Persist lb_id back to the lb_ips table so GET /ips/{id} reflects the attachment.
+	if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
+		_, _ = r.UpdateLBIP(ipEntry["id"].(string), map[string]any{"lb_id": id})
 	}
 	return data, nil
 }
