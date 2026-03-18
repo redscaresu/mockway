@@ -1286,8 +1286,12 @@ func (r *Repository) DeleteInstanceVolume(zone, volumeID string) error {
 
 func (r *Repository) GetInstanceVolume(zone, volumeID string) (map[string]any, error) {
 	// Check standalone volumes first.
-	if vol, err := r.getJSONByID("instance_volumes", "id", volumeID); err == nil {
+	vol, err := r.getJSONByID("instance_volumes", "id", volumeID)
+	if err == nil {
 		return vol, nil
+	}
+	if !errors.Is(err, models.ErrNotFound) {
+		return nil, err
 	}
 	// Fall back to volumes embedded inside server JSON.
 	servers, err := r.listJSON("instance_servers", "zone", zone)

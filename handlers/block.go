@@ -68,10 +68,16 @@ func (app *Application) DeleteBlockVolumeHandler(w http.ResponseWriter, r *http.
 			writeDomainError(w, err)
 			return
 		}
-		// Not in block_volumes — fall back to removing from the server's embedded volumes map.
-		if err2 := app.repo.DeleteInstanceVolume(chi.URLParam(r, "zone"), volumeID); err2 != nil {
-			writeDomainError(w, err2)
-			return
+		// Not in block_volumes — try standalone instance volumes, then embedded server volumes.
+		if err2 := app.repo.DeleteStandaloneVolume(volumeID); err2 != nil {
+			if !errors.Is(err2, models.ErrNotFound) {
+				writeDomainError(w, err2)
+				return
+			}
+			if err3 := app.repo.DeleteInstanceVolume(chi.URLParam(r, "zone"), volumeID); err3 != nil {
+				writeDomainError(w, err3)
+				return
+			}
 		}
 	}
 	writeNoContent(w)
