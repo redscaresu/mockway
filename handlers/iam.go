@@ -196,7 +196,7 @@ func (app *Application) SetIAMRules(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := app.repo.SetIAMRules(policyID, rules)
 	if err != nil {
-		writeDomainError(w, err)
+		writeCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rules": result, "total_count": len(result)})
@@ -467,7 +467,7 @@ func (app *Application) SetIAMGroupMembers(w http.ResponseWriter, r *http.Reques
 	}
 	out, err := app.repo.SetIAMGroupMembers(chi.URLParam(r, "group_id"), userIDs)
 	if err != nil {
-		writeDomainError(w, err)
+		writeCreateError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
