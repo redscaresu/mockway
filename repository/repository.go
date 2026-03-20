@@ -1543,6 +1543,10 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 		if err != nil {
 			return nil, models.ErrNotFound
 		}
+		// Reject if the IP is already attached to another LB.
+		if existingLBID, _ := existing["lb_id"].(string); existingLBID != "" {
+			return nil, models.ErrConflict
+		}
 		ipEntry = cloneMap(existing)
 		ipEntry["lb_id"] = id
 	}
@@ -3684,6 +3688,18 @@ func (r *Repository) CreateRDBEndpoint(instanceID string, data map[string]any) (
 	}
 	ep := cloneMap(data)
 	ep["id"] = newID()
+	// Validate private network reference if present.
+	if pn, ok := ep["private_network"].(map[string]any); ok {
+		pnID, _ := pn["id"].(string)
+		if pnID == "" {
+			pnID, _ = pn["private_network_id"].(string)
+		}
+		if pnID != "" {
+			if _, err := r.GetPrivateNetwork(pnID); err != nil {
+				return nil, models.ErrNotFound
+			}
+		}
+	}
 	eps, _ := instance["endpoints"].([]any)
 	eps = append(eps, ep)
 	instance["endpoints"] = eps

@@ -568,7 +568,11 @@ func (app *Application) RenewRDBCertificate(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (app *Application) PrepareRDBInstanceLogs(w http.ResponseWriter, _ *http.Request) {
+func (app *Application) PrepareRDBInstanceLogs(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetRDBInstance(chi.URLParam(r, "instance_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}, "total_count": 0})
 }
 
