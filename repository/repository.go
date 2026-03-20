@@ -1597,6 +1597,38 @@ func (r *Repository) DeleteLB(id string) error {
 		return mapDeleteSQLError(err)
 	}
 
+	// Detach any LB IPs — clear lb_id so the IP can be reused or deleted.
+	// Read current IP data, clear lb_id, write back.
+	ipRows, err := tx.Query("SELECT id, data FROM lb_ips WHERE zone IN (SELECT zone FROM lbs WHERE id = ?)", id)
+	if err == nil {
+		type ipUpdate struct {
+			id   string
+			data []byte
+		}
+		var updates []ipUpdate
+		for ipRows.Next() {
+			var ipID string
+			var raw []byte
+			if err := ipRows.Scan(&ipID, &raw); err != nil {
+				ipRows.Close()
+				break
+			}
+			ipData, err := unmarshalData(raw)
+			if err != nil {
+				continue
+			}
+			if lbID, _ := ipData["lb_id"].(string); lbID == id {
+				ipData["lb_id"] = nil
+				b, _ := marshalData(ipData)
+				updates = append(updates, ipUpdate{id: ipID, data: b})
+			}
+		}
+		ipRows.Close()
+		for _, u := range updates {
+			_, _ = tx.Exec("UPDATE lb_ips SET data = ? WHERE id = ?", u.data, u.id)
+		}
+	}
+
 	res, err := tx.Exec("DELETE FROM lbs WHERE id = ?", id)
 	if err != nil {
 		return mapDeleteSQLError(err)
@@ -1632,7 +1664,17 @@ func (r *Repository) GetLBIP(id string) (map[string]any, error) {
 func (r *Repository) ListLBIPs(zone string) ([]map[string]any, error) {
 	return r.listJSON("lb_ips", "zone", zone)
 }
-func (r *Repository) DeleteLBIP(id string) error { return r.deleteBy("lb_ips", "id = ?", id) }
+func (r *Repository) DeleteLBIP(id string) error {
+	// Block deletion if the IP is attached to a load balancer.
+	ip, err := r.getJSONByID("lb_ips", "id", id)
+	if err != nil {
+		return err
+	}
+	if lbID, _ := ip["lb_id"].(string); lbID != "" {
+		return models.ErrConflict
+	}
+	return r.deleteBy("lb_ips", "id = ?", id)
+}
 
 func (r *Repository) CreateFrontend(data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)

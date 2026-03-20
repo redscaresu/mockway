@@ -316,9 +316,16 @@ func (app *Application) SetRDBSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
-	settings, _ := body["settings"].([]any)
-	if settings == nil {
-		settings = []any{}
+	// Validate the instance exists — real API returns 404 for missing instances.
+	instanceID := chi.URLParam(r, "instance_id")
+	if _, err := app.repo.GetRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	settings, ok := body["settings"].([]any)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "settings is required", "type": "invalid_argument"})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": settings})
 }

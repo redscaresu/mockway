@@ -110,18 +110,15 @@ func TestMarketplaceLocalImagesCompatibleTypesContainsDEV1S(t *testing.T) {
 	require.Contains(t, compatible, "DEV1-S")
 }
 
-func TestMarketplaceLocalImagesUnknownLabelReturnsResult(t *testing.T) {
+func TestMarketplaceLocalImagesUnknownLabelEmpty(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
-	// Any label should return results — the marketplace generates deterministic
-	// UUIDs for unknown labels so new images work without code changes.
+	// Unknown labels return empty — matches real Scaleway API to catch typos.
 	status, body := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=not_real&zone=fr-par-1&type=instance_sbs")
 	require.Equal(t, 200, status)
-	require.Equal(t, float64(1), body["total_count"])
-	images := body["local_images"].([]any)
-	require.Len(t, images, 1)
-	require.Equal(t, "not_real", images[0].(map[string]any)["label"])
+	require.Equal(t, float64(0), body["total_count"])
+	require.Len(t, body["local_images"].([]any), 0)
 }
 
 func TestMarketplaceLocalImageGetByID(t *testing.T) {
@@ -150,22 +147,14 @@ func TestMarketplaceLocalImageGetUnknownID404(t *testing.T) {
 	require.Equal(t, "not_found", body["type"])
 }
 
-func TestMarketplaceLocalImageDynamicLabelRoundTrip(t *testing.T) {
+func TestMarketplaceLocalImageUnknownLabelReturnsEmpty(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
-	// List with a dynamic label caches the label for GET resolution.
+	// Unknown labels return empty list — catches typos like real API.
 	status, list := testutil.DoGet(t, ts, "/marketplace/v2/local-images?image_label=custom_os&zone=fr-par-1&type=instance_sbs")
 	require.Equal(t, 200, status)
-	images := list["local_images"].([]any)
-	require.Len(t, images, 1)
-	id := images[0].(map[string]any)["id"].(string)
-
-	// GET the same ID should return matching metadata.
-	status, got := testutil.DoGet(t, ts, "/marketplace/v2/local-images/"+id)
-	require.Equal(t, 200, status)
-	require.Equal(t, "custom_os", got["label"])
-	require.Equal(t, "fr-par-1", got["zone"])
+	require.Equal(t, float64(0), list["total_count"])
 }
 
 func TestMarketplaceLocalImagesPaginationIgnored(t *testing.T) {

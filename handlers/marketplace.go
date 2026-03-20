@@ -9,8 +9,8 @@ import (
 )
 
 // knownMarketplaceLabels covers common Scaleway marketplace images.
-// The handler also accepts any unknown label dynamically so that new images
-// don't require a code change.
+// Only known labels return results — unknown labels return an empty list,
+// matching the real Scaleway API behavior to catch typos.
 var knownMarketplaceLabels = []string{
 	// Ubuntu
 	"ubuntu_noble", "ubuntu_jammy", "ubuntu_focal",
@@ -52,13 +52,34 @@ func (app *Application) ListMarketplaceLocalImages(w http.ResponseWriter, r *htt
 	zone := strings.TrimSpace(r.URL.Query().Get("zone"))
 	imageType := strings.TrimSpace(r.URL.Query().Get("type"))
 
-	// Determine which labels to enumerate. If a specific label is requested,
-	// return results for it regardless of whether it's in the known list.
+	// Determine which labels to enumerate. Only known labels return results —
+	// unknown labels return an empty list, matching the real API to catch typos.
 	labels := knownMarketplaceLabels
 	if imageLabel != "" {
-		labels = []string{imageLabel}
-		// Persist the label so GET can resolve its IDs after restart.
-		_ = app.repo.AddMarketplaceLabel(imageLabel)
+		// Check known list + persisted custom labels.
+		found := false
+		for _, l := range knownMarketplaceLabels {
+			if l == imageLabel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if custom, err := app.repo.ListMarketplaceLabels(); err == nil {
+				for _, l := range custom {
+					if l == imageLabel {
+						found = true
+						break
+					}
+				}
+			}
+		}
+		if found {
+			labels = []string{imageLabel}
+		} else {
+			// Unknown label — return empty like the real API.
+			labels = nil
+		}
 	}
 
 	out := make([]map[string]any, 0)
@@ -84,8 +105,7 @@ func (app *Application) ListMarketplaceLocalImages(w http.ResponseWriter, r *htt
 
 func (app *Application) GetMarketplaceLocalImage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "local_image_id")
-
-	// Build label list: known + persisted dynamic labels.
+	// Search known labels + persisted custom labels.
 	allLabels := make([]string, 0, len(knownMarketplaceLabels))
 	allLabels = append(allLabels, knownMarketplaceLabels...)
 	if dynamic, err := app.repo.ListMarketplaceLabels(); err == nil {
