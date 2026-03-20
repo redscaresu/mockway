@@ -1182,9 +1182,12 @@ func TestIAMAPIKeyLifecycleAndRules(t *testing.T) {
 	_, hasSecret = item["secret_key"]
 	require.False(t, hasSecret)
 
-	status, userKey := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"user_id": "user-1"})
+	// Create a user so the API key can reference it.
+	_, user := testutil.DoCreate(t, ts, "/iam/v1alpha1/users", map[string]any{"email": "test@example.com"})
+	userID := user["id"].(string)
+	status, userKey := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"user_id": userID})
 	require.Equal(t, 200, status)
-	require.Equal(t, "user-1", userKey["user_id"])
+	require.Equal(t, userID, userKey["user_id"])
 
 	status, body := testutil.DoCreate(t, ts, "/iam/v1alpha1/api-keys", map[string]any{"application_id": "non-existent"})
 	require.Equal(t, 404, status)
@@ -4366,8 +4369,9 @@ func TestResetClearsAllNewServices(t *testing.T) {
 	require.Equal(t, float64(0), body["total_count"])
 	_, body = testutil.DoList(t, ts, "/registry/v1/regions/fr-par/namespaces")
 	require.Equal(t, float64(0), body["total_count"])
-	_, body = testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones/example.com/records")
-	require.Equal(t, float64(0), body["total_count"])
+	// DNS zone was deleted by reset — records endpoint returns 404.
+	dnsStatus, _ := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones/example.com/records")
+	require.Equal(t, 404, dnsStatus)
 }
 
 // --- IPAM tests ---

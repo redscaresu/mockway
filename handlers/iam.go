@@ -77,6 +77,13 @@ func (app *Application) CreateIAMAPIKey(w http.ResponseWriter, r *http.Request) 
 	if appID == "" {
 		delete(body, "application_id")
 	}
+	// Validate user_id exists if provided — real API rejects unknown user references.
+	if userID != "" {
+		if _, err := app.repo.GetIAMUser(userID); err != nil {
+			writeCreateError(w, err)
+			return
+		}
+	}
 
 	out, err := app.repo.CreateIAMAPIKey(body)
 	if err != nil {

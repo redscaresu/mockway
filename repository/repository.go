@@ -2552,6 +2552,10 @@ func (r *Repository) PatchDomainRecords(dnsZone string, changes []any) ([]map[st
 }
 
 func (r *Repository) ListDomainRecords(dnsZone string) ([]map[string]any, error) {
+	// Verify the DNS zone exists — return 404 for missing zones.
+	if _, err := r.GetDNSZone(dnsZone); err != nil {
+		return nil, err
+	}
 	return r.listJSON("domain_records", "dns_zone", dnsZone)
 }
 

@@ -52,10 +52,18 @@ func (app *Application) DeleteIPAMIP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) DetachIPAMIP(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetIPAMIP(chi.URLParam(r, "ip_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func (app *Application) MoveIPAMIP(w http.ResponseWriter, r *http.Request) {
+	if _, err := app.repo.GetIPAMIP(chi.URLParam(r, "ip_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
