@@ -304,6 +304,37 @@ go test -tags provider_e2e ./e2e -run TestExamplesUpdatesIdempotency -v   # upda
 
 **Idempotency is the hardest correctness property**: a passing `apply` does not mean the handler is correct. Run the no-op plan check. If it exits 2 (drift), the GET response shape does not round-trip through the provider. See "Common drift causes" above.
 
+## API Fidelity Principles
+
+Mockway's value depends on behaving like the real Scaleway API. When mockway is more permissive than production, it hides bugs that only surface during deployment. When mockway is more restrictive, it produces false failures.
+
+**What mockway MUST enforce** (bugs that `terraform validate` and `terraform plan` cannot catch):
+- **FK references**: creating a resource with a non-existent parent must fail (404)
+- **Dependency ordering**: deleting a parent with children must fail (409)
+- **Attachment constraints**: deleting an IP while attached to an LB must fail (409)
+- **Image resolution**: unknown marketplace labels must return empty list (catches typos like `ubuntu_jammyy`)
+- **Instance existence**: operations on non-existent instances must fail (404), not silently succeed
+- **Response shapes**: GET must return exactly the fields the provider reads, in the structure it expects
+
+**What mockway deliberately does NOT enforce** (already caught by `terraform validate` / provider SDK):
+- Field value constraints (`commercial_type` values, engine version strings)
+- Required fields on create (the provider validates these before sending the API call)
+- String length limits, tag count limits
+- Pagination parameters
+- Rate limiting
+
+**The litmus test**: if a Terraform config passes mockway but fails on real Scaleway due to FK/dependency/reference issues, that's a mockway bug. Field validation failures on real Scaleway are caught by the provider SDK before the HTTP call.
+
+**When fixing bugs, ask**: "Am I making mockway MORE or LESS permissive than the real API?"
+- **Less permissive** (rejecting requests the real API would reject) = almost always correct
+- **More permissive** (accepting requests the real API would reject) = treat with suspicion; this hides bugs
+
+**Examples of past mistakes where mockway was made too permissive:**
+- Marketplace labels: accepting any label dynamically hid image name typos
+- RDB settings: returning 200 for non-existent instances hid broken references
+- LB IP deletion: allowing deletion while attached hid destroy-order bugs
+- DNS zone list: synthesizing zones from query parameters fabricated non-existent resources
+
 ## Common Bug Patterns (from code review)
 
 These recurring patterns have been found across multiple review cycles. Check for them when adding or modifying handlers:

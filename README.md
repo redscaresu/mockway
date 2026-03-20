@@ -114,7 +114,7 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 
 ## Known Limitations
 
-- **No field validation.** Mockway accepts whatever JSON you send and stores it. It does not validate `commercial_type`, `node_type`, required fields, or value constraints beyond foreign key references.
+- **No field validation.** Mockway does not validate required fields, `commercial_type`, `node_type`, or value constraints. This is deliberate — the Terraform provider SDK validates required fields before sending the API call, so these errors never reach the API in real usage. Mockway focuses on catching the bugs that `terraform validate` and `terraform plan` miss: FK references, dependency ordering, attachment constraints, and response shape correctness.
 - **No pagination.** All list endpoints return all results in a single page. `page`/`per_page` query parameters are ignored.
 - **No S3 / Object Storage.** S3-compatible endpoints are not implemented. Scaleway's Object Storage uses the S3 protocol (AWS SigV4 auth, XML responses).
 - **IAM rules are policy-scoped.** `GET /iam/v1alpha1/rules?policy_id=<id>` returns rules stored during policy create. `GET /iam/v1alpha1/rules` without a `policy_id` always returns an empty list.
