@@ -2355,6 +2355,10 @@ func (r *Repository) SetRDBACLs(instanceID string, rules []any) ([]any, error) {
 }
 
 func (r *Repository) ListRDBACLs(instanceID string) ([]any, error) {
+	// Verify the instance exists — return 404 for missing instances.
+	if _, err := r.getJSONByID("rdb_instances", "id", instanceID); err != nil {
+		return nil, err
+	}
 	row := r.db.QueryRow("SELECT data FROM rdb_acls WHERE instance_id = ?", instanceID)
 	var raw []byte
 	if err := row.Scan(&raw); err != nil {
@@ -2375,6 +2379,10 @@ func (r *Repository) ListRDBACLs(instanceID string) ([]any, error) {
 }
 
 func (r *Repository) DeleteRDBACLs(instanceID string, ruleIPs []string) error {
+	// Verify the instance exists — return 404 for missing instances.
+	if _, err := r.getJSONByID("rdb_instances", "id", instanceID); err != nil {
+		return err
+	}
 	if len(ruleIPs) == 0 {
 		_, err := r.db.Exec("DELETE FROM rdb_acls WHERE instance_id = ?", instanceID)
 		return err

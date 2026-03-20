@@ -302,6 +302,9 @@ func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
 			writeDomainError(w, err)
 			return
 		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "unknown action: " + action, "type": "invalid_argument"})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task": map[string]any{
