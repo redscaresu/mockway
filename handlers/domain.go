@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -40,13 +39,10 @@ func (app *Application) ListDNSZones(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filter by dns_zone if requested. Narrow to matching zones and synthesize
-	// a subdomain zone when the parent domain exists in storage.
+	// Filter by dns_zone if requested. Only return actually stored zones —
+	// never synthesize zones that don't exist (would hide config bugs).
 	if dnsZone != "" {
-		parts := strings.SplitN(dnsZone, ".", 2)
 		filtered := make([]map[string]any, 0)
-		hasExactMatch := false
-		hasParentDomain := false
 		for _, z := range zones {
 			sub, _ := z["subdomain"].(string)
 			d, _ := z["domain"].(string)
@@ -55,30 +51,8 @@ func (app *Application) ListDNSZones(w http.ResponseWriter, r *http.Request) {
 				full = sub + "." + d
 			}
 			if full == dnsZone {
-				hasExactMatch = true
 				filtered = append(filtered, z)
 			}
-		}
-		if !hasExactMatch {
-			for _, z := range zones {
-				sub, _ := z["subdomain"].(string)
-				d, _ := z["domain"].(string)
-				if len(parts) == 2 && d == parts[1] && sub == "" {
-					hasParentDomain = true
-					filtered = append(filtered, z)
-				}
-			}
-		}
-		if !hasExactMatch && hasParentDomain && len(parts) == 2 && parts[0] != "" {
-			filtered = append(filtered, map[string]any{
-				"domain":     parts[1],
-				"subdomain":  parts[0],
-				"ns":         []any{"ns0.dom.scw.cloud", "ns1.dom.scw.cloud"},
-				"ns_default": []any{"ns0.dom.scw.cloud", "ns1.dom.scw.cloud"},
-				"ns_master":  []any{},
-				"status":     "active",
-				"project_id": "00000000-0000-0000-0000-000000000000",
-			})
 		}
 		zones = filtered
 	}

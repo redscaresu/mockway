@@ -2432,14 +2432,12 @@ func TestDNSZoneListReturnsZones(t *testing.T) {
 	require.Equal(t, "example.com", zone["domain"])
 	require.Equal(t, "active", zone["status"])
 
-	// List with dns_zone filter adds subdomain zone.
+	// List with dns_zone filter for a non-existent subdomain returns empty —
+	// no synthesis of zones that weren't explicitly created.
 	status, body = testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones?domain=example.com&dns_zone=app.example.com")
 	require.Equal(t, 200, status)
 	zones = body["dns_zones"].([]any)
-	require.Len(t, zones, 2)
-	sub := zones[1].(map[string]any)
-	require.Equal(t, "app", sub["subdomain"])
-	require.Equal(t, "example.com", sub["domain"])
+	require.Len(t, zones, 0)
 }
 
 func TestDNSRecordPatchAndList(t *testing.T) {
