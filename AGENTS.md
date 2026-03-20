@@ -66,7 +66,7 @@ mockway/
 | IPAM | `/ipam/v1/regions/{region}/` | ips (list-only stub) |
 | Domain | `/domain/v2beta1/` | dns-zones (full CRUD), records (patch + list) |
 | Block | `/block/v1alpha1/zones/{zone}/` | volumes (full CRUD); snapshots (full CRUD) |
-| Marketplace | `/marketplace/v2/` | local-images (image label → UUID resolution; dynamic labels persisted in `marketplace_labels` table) |
+| Marketplace | `/marketplace/v2/` | local-images (image label → UUID resolution; unknown labels return empty list to catch typos) |
 | Account (legacy) | `/account/v2alpha1/` | ssh-keys alias → IAM ssh-keys table |
 
 **Naming**: Scaleway uses hyphens in URL paths (`/private-networks/`) but underscores in JSON keys (`"private_network_id"`).
@@ -96,7 +96,7 @@ Per-type tables with a JSON `data` blob for full resource data, plus extracted F
 
 **Stateless tables** (no FK):
 - `dns_zones` — keyed by `dns_zone` (e.g. `app.example.com`), indexed by `domain`
-- `marketplace_labels` — persists dynamic image labels for GET resolution across restarts
+- `marketplace_labels` — persists custom image labels added via `AddMarketplaceLabel()` (unused since unknown labels now return empty; retained for backward compat with `--db` files)
 
 **Migration system**: `migrate()` runs versioned DDL via create-new/copy/drop/rename to handle existing file DBs (`--db`). `CREATE TABLE IF NOT EXISTS` is a no-op on existing tables — schema changes require migrations.
 
@@ -141,10 +141,11 @@ Per-type tables with a JSON `data` blob for full resource data, plus extracted F
 SQLite enforces most FKs natively. For FKs inside the JSON blob (e.g. RDB `init_endpoints[].private_network.id`), validate programmatically in the handler before inserting.
 
 **IAM FK rules**:
-- API key: `application_id` or `user_id` required. `application_id` must reference existing application → 404.
+- API key: `application_id` or `user_id` required (mutually exclusive). Both must reference an existing resource → 404.
 - Policy: `application_id` optional, must reference existing application if provided → 404.
 - Delete application: reject if API keys or policies still reference it → 409.
 - Group members: `user_id` must reference existing user → 404.
+- Group membership set: accepts `user_ids` (plural) or `user_id` (singular) for provider compatibility.
 
 **Error helper selection**:
 - `writeCreateError(w, err)` — Create handlers only. Maps `ErrNotFound` → 404 `"referenced resource not found"`.
@@ -361,15 +362,31 @@ These recurring patterns have been found across multiple review cycles. Check fo
 
 When adding any new handler, verify ALL of these:
 
+**Error handling:**
 - [ ] Create/Attach/Set handlers use `writeCreateError`, not `writeDomainError`
+- [ ] Operations on sub-resources validate parent exists (e.g. settings/ACLs/privileges check instance_id)
+
+**State consistency:**
 - [ ] Update functions sync ALL extracted SQL columns (not just JSON blob)
 - [ ] New tables added to both `init()` and `Reset()`
 - [ ] New tables included in `FullState()` and `ServiceState()`
 - [ ] Cross-resource references updated in BOTH directions on create
 - [ ] Multi-step mutations wrapped in transactions
+
+**API fidelity (don't be more permissive than the real API):**
+- [ ] Unknown/non-existent resource references return 404 (not silent success)
+- [ ] Attached resources block deletion (409, not silent success)
+- [ ] Marketplace labels only resolve known images (not any string)
+- [ ] Operations on non-existent parent resources fail (not return empty list)
+
+**Data handling:**
 - [ ] Array inputs processed fully (not just `[0]`)
 - [ ] `[]byte` SDK fields base64-encoded in JSON responses
+- [ ] Payload field name variations handled (e.g. `user_ids` / `user_id`)
+
+**Verification:**
 - [ ] Working example + update example added and passing
+- [ ] Run codex API fidelity review before merging
 
 ## Update Handler Pattern
 
@@ -400,7 +417,27 @@ next["updated_at"] = nowRFC3339()
 - `UpdateVPC`: sync `region` SQL column
 - `UpdatePrivateNetwork`: sync `vpc_id` and `region` SQL columns
 - `UpdateVPCRoute`: sync `vpc_id` and `region` SQL columns
+- `UpdateVPCPublicGateway`: sync `zone` SQL column
 - `UpdateVPCGatewayNetwork`: sync `gateway_id` and `private_network_id` SQL columns
+- `UpdateLB`: sync `zone` SQL column
+- `UpdateFrontend`: sync `lb_id` SQL column
+- `UpdateBackend`: sync `lb_id` SQL column
+- `UpdateLBACL`: sync `frontend_id` SQL column
+- `UpdateLBRoute`: sync `lb_id` SQL column
+- `UpdateLBCertificate`: sync `lb_id` SQL column
+- `UpdateLBIP`: sync `zone` SQL column
+- `UpdateSecurityGroup`: sync `zone` SQL column
+- `UpdateInstanceVolume`: sync `zone` SQL column
+- `UpdateCluster`: sync `region` and `private_network_id` SQL columns
+- `UpdatePool`: sync `cluster_id` and `region` SQL columns
+- `UpdateRDBInstance`: sync `region` SQL column
+- `UpdateRedisCluster`: sync `zone` SQL column
+- `UpdateBlockVolume`: sync `zone` SQL column
+- `UpdateBlockSnapshot`: sync `zone` and `volume_id` SQL columns
+- `UpdateIPAMIP`: sync `region` SQL column
+- `UpdateRDBSnapshot`: sync `instance_id` and `region` SQL columns
+- `UpdateRDBBackup`: sync `instance_id` and `region` SQL columns
+- `UpdateRegistryNamespace`: sync `region` SQL column
 - `UpdateIAMAPIKey`: sync `application_id` SQL column
 - `UpdateIAMPolicy`: sync `application_id` SQL column
 
