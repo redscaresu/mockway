@@ -407,6 +407,7 @@ When adding any new handler, verify ALL of these:
 **Verification:**
 - [ ] Working example + update example added and passing
 - [ ] Run codex API fidelity review before merging
+- [ ] Commit new learnings/bug patterns to AGENTS.md as part of the review — don't wait to be asked
 
 ## Update Handler Pattern
 
@@ -556,6 +557,24 @@ terraform init && terraform apply -auto-approve
 - **No S3/Object Storage**.
 - **Cross-LB consistency checks are enforced**: LB routes validate that frontend and backend belong to the same LB on both create and update.
 - **RDB private network JSON refs not FK-enforced**: RDB instance endpoints store `private_network.id` inside JSON, not as a SQL FK column. Deleting a private network that's referenced by an RDB endpoint JSON succeeds in mockway but would fail on real Scaleway.
+
+## Review Loop
+
+To kick off a full API fidelity review loop, use this prompt:
+
+```
+keep asking codex until it cant provide any new feedback for 3 passes in a row.
+We are looking for bugs and problems. One of my main fears is that you fixed
+issues in mockway that are actually real issues that would be triggered when
+going live. The main value of mockway
+```
+
+The loop should:
+1. Run codex API fidelity reviews (both permissive AND restrictive)
+2. Fix any genuine issues found
+3. Reset the clean-pass counter whenever an issue is found and fixed
+4. Continue until 3 consecutive clean passes
+5. Commit new learnings/bug patterns to this file before the final commit
 
 ## Distribution
 
