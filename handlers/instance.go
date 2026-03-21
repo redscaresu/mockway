@@ -598,7 +598,12 @@ func (app *Application) GetPrivateNIC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListPrivateNICs(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListPrivateNICsByServer(chi.URLParam(r, "server_id"))
+	serverID := chi.URLParam(r, "server_id")
+	if _, err := app.repo.GetServer(serverID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	items, err := app.repo.ListPrivateNICsByServer(serverID)
 	if err != nil {
 		writeDomainError(w, err)
 		return

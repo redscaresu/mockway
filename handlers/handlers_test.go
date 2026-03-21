@@ -414,9 +414,9 @@ func TestDeleteServerCascadesPrivateNICs(t *testing.T) {
 	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID)
 	require.Equal(t, 204, status)
 
-	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics")
-	require.Equal(t, 200, status)
-	require.Equal(t, float64(0), body["total_count"])
+	// Server deleted — listing NICs returns 404 (parent gone).
+	nicStatus, _ := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics")
+	require.Equal(t, 404, nicStatus)
 }
 
 func TestServerTerminateActionDeletesServer(t *testing.T) {
@@ -968,9 +968,9 @@ func TestDeleteConflictForMultipleDependencies(t *testing.T) {
 	})
 	status := testutil.DoDelete(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server))
 	require.Equal(t, 204, status)
-	status, body := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server)+"/private_nics")
-	require.Equal(t, 200, status)
-	require.Equal(t, float64(0), body["total_count"])
+	// Server deleted — listing NICs returns 404 (parent gone).
+	nicStatus, _ := testutil.DoList(t, ts, "/instance/v1/zones/fr-par-1/servers/"+resourceID(server)+"/private_nics")
+	require.Equal(t, 404, nicStatus)
 
 	// K8s cluster delete cascade-deletes pools (matches real Scaleway).
 	_, cluster := testutil.DoCreate(t, ts, "/k8s/v1/regions/fr-par/clusters", map[string]any{"name": "k"})

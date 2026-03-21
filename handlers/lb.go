@@ -145,6 +145,10 @@ func (app *Application) ListFrontends(w http.ResponseWriter, r *http.Request) {
 	var items []map[string]any
 	var err error
 	if lbID != "" {
+		if _, err := app.repo.GetLB(lbID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
 		items, err = app.repo.ListFrontendsByLB(lbID)
 	} else {
 		items, err = app.repo.ListFrontends()
@@ -219,6 +223,10 @@ func (app *Application) ListBackends(w http.ResponseWriter, r *http.Request) {
 	var items []map[string]any
 	var err error
 	if lbID != "" {
+		if _, err := app.repo.GetLB(lbID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
 		items, err = app.repo.ListBackendsByLB(lbID)
 	} else {
 		items, err = app.repo.ListBackends()
