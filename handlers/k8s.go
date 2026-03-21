@@ -97,6 +97,10 @@ func (app *Application) GetNode(w http.ResponseWriter, r *http.Request) {
 
 func (app *Application) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 	clusterID := chi.URLParam(r, "cluster_id")
+	if _, err := app.repo.GetCluster(clusterID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	// Return nodes based on existing pools for this cluster.
 	pools, err := app.repo.ListPoolsByCluster(clusterID)
 	if err != nil {
@@ -237,7 +241,12 @@ func (app *Application) GetPool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListPools(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListPoolsByCluster(chi.URLParam(r, "cluster_id"))
+	clusterID := chi.URLParam(r, "cluster_id")
+	if _, err := app.repo.GetCluster(clusterID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	items, err := app.repo.ListPoolsByCluster(clusterID)
 	if err != nil {
 		writeDomainError(w, err)
 		return

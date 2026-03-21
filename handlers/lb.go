@@ -279,14 +279,19 @@ func (app *Application) AttachLBPrivateNetwork(w http.ResponseWriter, r *http.Re
 
 func (app *Application) ListLBPrivateNetworks(w http.ResponseWriter, r *http.Request) {
 	lbID := chi.URLParam(r, "lb_id")
+	// Validate the LB exists — real API returns 404 for missing LBs.
+	lb, err := app.repo.GetLB(lbID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	items, err := app.repo.ListLBPrivateNetworks(lbID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	// Enrich each item with the LB object — the provider accesses pn.LB.Zone.
-	lb, lbErr := app.repo.GetLB(lbID)
-	if lbErr == nil {
+	if lb != nil {
 		for i := range items {
 			items[i]["lb"] = lb
 		}
