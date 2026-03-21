@@ -362,6 +362,12 @@ These recurring patterns have been found across multiple review cycles. Check fo
 
 **11. Never auto-generate IDs for unvalidated inputs**: When resolving a label/name to a UUID (marketplace images, server images), only resolve known values. Generating deterministic IDs for any arbitrary string makes typos silently succeed — the exact class of bug mockway exists to catch.
 
+**12. Nested-path child ownership validation**: For routes like `/servers/{server_id}/private_nics/{nic_id}`, GET and DELETE must verify the child resource actually belongs to the parent in the URL — not just that the child exists globally. Without this, a NIC from server-A is accessible via `/servers/server-B/private_nics/{nic_id}`, hiding misconfigurations.
+
+**13. Cross-parent reference validation**: When a resource references two parents (e.g. LB routes reference both a frontend and a backend), validate they belong to the same grandparent (same LB). The real API rejects cross-LB frontend/backend pairs; without this check, broken Terraform configs that mix resources from different LBs pass mockway.
+
+**14. Reverse fidelity — don't over-correct**: When adding validation, verify the real Scaleway API actually enforces that constraint. Making mockway MORE restrictive than the real API causes false negatives — users think their config is broken when it would work fine in production. Before adding any new validation, ask: "would the real API reject this?" If unsure, check the OpenAPI spec or test against the real API. Common over-corrections: inventing field format validation the API doesn't enforce, returning 404 on list endpoints where the real API returns empty list, adding cascade-blocking constraints the real API doesn't have.
+
 ## Checklist for new handlers
 
 When adding any new handler, verify ALL of these:
@@ -385,11 +391,18 @@ When adding any new handler, verify ALL of these:
 - [ ] ALL sub-resource endpoints (list/set/delete/action) validate parent exists
 - [ ] Label/name-to-UUID resolution only resolves known values (no auto-generation for unknown inputs)
 - [ ] Resources already attached to another parent reject reuse (IP, LB IP)
+- [ ] Nested-path GET/DELETE validates child belongs to parent in URL (not just globally)
+- [ ] Cross-parent references validated (e.g. LB route frontend+backend belong to same LB)
 
 **Data handling:**
 - [ ] Array inputs processed fully (not just `[0]`)
 - [ ] `[]byte` SDK fields base64-encoded in JSON responses
 - [ ] Payload field name variations handled (e.g. `user_ids` / `user_id`)
+
+**Reverse fidelity (don't be more restrictive than the real API):**
+- [ ] Validation you add actually matches real Scaleway behavior — don't invent constraints
+- [ ] Consider whether the real API returns 404 or empty list for missing parent on list endpoints
+- [ ] LB delete cascade behavior: real API cascades children; mockway relies on provider deleting children first (acceptable since mockway is used with Terraform)
 
 **Verification:**
 - [ ] Working example + update example added and passing
@@ -541,7 +554,7 @@ terraform init && terraform apply -auto-approve
 - **Block snapshots**: `parent_volume` is stored as `{"id": "<uuid>"}` only; name/type fields are absent. Sufficient for provider idempotency but not full API fidelity.
 - **No auth validation**: any non-empty `X-Auth-Token` accepted.
 - **No S3/Object Storage**.
-- **No cross-LB consistency checks**: LB routes and frontends don't validate that referenced frontend/backend belong to the same LB. The Terraform provider always generates consistent references from the resource graph, so this doesn't hide real bugs.
+- **Cross-LB consistency checks are enforced**: LB routes validate that frontend and backend belong to the same LB on both create and update.
 - **RDB private network JSON refs not FK-enforced**: RDB instance endpoints store `private_network.id` inside JSON, not as a SQL FK column. Deleting a private network that's referenced by an RDB endpoint JSON succeeds in mockway but would fail on real Scaleway.
 
 ## Distribution
