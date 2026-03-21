@@ -358,6 +358,10 @@ These recurring patterns have been found across multiple review cycles. Check fo
 
 **9. Validate referenced resources exist on set/replace operations**: Set-style handlers (PUT that replaces all items) should verify the parent resource exists before modifying child state. Without this, `PUT /instances/{missing-id}/privileges` with an empty body silently succeeds instead of returning 404.
 
+**10. Every sub-resource operation must validate its parent exists**: List, Set, Delete, and action endpoints on sub-resources (databases, users, ACLs, privileges, settings, logs, records, endpoints) must check the parent resource exists and return 404 if not. Without this, operations on non-existent parents return empty lists or silent success — hiding broken references that would fail in production. This was the most common API fidelity gap found across review cycles.
+
+**11. Never auto-generate IDs for unvalidated inputs**: When resolving a label/name to a UUID (marketplace images, server images), only resolve known values. Generating deterministic IDs for any arbitrary string makes typos silently succeed — the exact class of bug mockway exists to catch.
+
 ## Checklist for new handlers
 
 When adding any new handler, verify ALL of these:
@@ -378,6 +382,9 @@ When adding any new handler, verify ALL of these:
 - [ ] Attached resources block deletion (409, not silent success)
 - [ ] Marketplace labels only resolve known images (not any string)
 - [ ] Operations on non-existent parent resources fail (not return empty list)
+- [ ] ALL sub-resource endpoints (list/set/delete/action) validate parent exists
+- [ ] Label/name-to-UUID resolution only resolves known values (no auto-generation for unknown inputs)
+- [ ] Resources already attached to another parent reject reuse (IP, LB IP)
 
 **Data handling:**
 - [ ] Array inputs processed fully (not just `[0]`)
