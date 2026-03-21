@@ -76,9 +76,17 @@ func (app *Application) CreateLBRoute(w http.ResponseWriter, r *http.Request) {
 		lbID, _ = fe["lb_id"].(string)
 	}
 	if backendID, _ := body["backend_id"].(string); backendID != "" {
-		if _, err := app.repo.GetBackend(backendID); err != nil {
+		be, err := app.repo.GetBackend(backendID)
+		if err != nil {
 			writeCreateError(w, err)
 			return
+		}
+		// Validate backend belongs to the same LB as the frontend.
+		if lbID != "" {
+			if beLB, _ := be["lb_id"].(string); beLB != lbID {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"message": "backend does not belong to the same LB as frontend", "type": "invalid_argument"})
+				return
+			}
 		}
 	}
 	out, err := app.repo.CreateLBRoute(lbID, body)
@@ -101,6 +109,18 @@ func (app *Application) GetLBRoute(w http.ResponseWriter, r *http.Request) {
 func (app *Application) ListLBRoutes(w http.ResponseWriter, r *http.Request) {
 	lbID := r.URL.Query().Get("lb_id")
 	frontendID := r.URL.Query().Get("frontend_id")
+	if lbID != "" {
+		if _, err := app.repo.GetLB(lbID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
+	if frontendID != "" {
+		if _, err := app.repo.GetFrontend(frontendID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
 	items, err := app.repo.ListLBRoutes(lbID, frontendID)
 	if err != nil {
 		writeDomainError(w, err)
@@ -157,6 +177,10 @@ func (app *Application) GetLBCertificate(w http.ResponseWriter, r *http.Request)
 
 func (app *Application) ListLBCertificates(w http.ResponseWriter, r *http.Request) {
 	lbID := chi.URLParam(r, "lb_id")
+	if _, err := app.repo.GetLB(lbID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	items, err := app.repo.ListLBCertificatesByLB(lbID)
 	if err != nil {
 		writeDomainError(w, err)

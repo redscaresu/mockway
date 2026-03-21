@@ -594,6 +594,13 @@ func (app *Application) GetPrivateNIC(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	// Validate the NIC belongs to the server in the URL path.
+	if serverID := chi.URLParam(r, "server_id"); serverID != "" {
+		if nicServer, _ := out["server_id"].(string); nicServer != serverID {
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "resource not found", "type": "not_found"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"private_nic": out})
 }
 
@@ -612,7 +619,20 @@ func (app *Application) ListPrivateNICs(w http.ResponseWriter, r *http.Request) 
 }
 
 func (app *Application) DeletePrivateNIC(w http.ResponseWriter, r *http.Request) {
-	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "nic_id")); err != nil {
+	nicID := chi.URLParam(r, "nic_id")
+	// Validate the NIC belongs to the server in the URL path.
+	if serverID := chi.URLParam(r, "server_id"); serverID != "" {
+		nic, err := app.repo.GetPrivateNIC(nicID)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if nicServer, _ := nic["server_id"].(string); nicServer != serverID {
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "resource not found", "type": "not_found"})
+			return
+		}
+	}
+	if err := app.repo.DeletePrivateNIC(nicID); err != nil {
 		writeDomainError(w, err)
 		return
 	}

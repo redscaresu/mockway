@@ -161,7 +161,12 @@ func (app *Application) ListFrontends(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListFrontendACLs(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListLBACLsByFrontend(chi.URLParam(r, "frontend_id"))
+	frontendID := chi.URLParam(r, "frontend_id")
+	if _, err := app.repo.GetFrontend(frontendID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	items, err := app.repo.ListLBACLsByFrontend(frontendID)
 	if err != nil {
 		writeDomainError(w, err)
 		return

@@ -228,6 +228,10 @@ func (app *Application) SetRDBACLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	instanceID := chi.URLParam(r, "instance_id")
+	if _, err := app.repo.GetRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	rules, _ := body["rules"].([]any)
 	if rules == nil {
 		rules = []any{}

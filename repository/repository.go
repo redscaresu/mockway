@@ -3944,14 +3944,24 @@ func (r *Repository) UpdateLBRoute(id string, patch map[string]any) (map[string]
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
 	// Validate frontend_id and backend_id references if changed.
+	var feLBID string
 	if fid, ok := next["frontend_id"].(string); ok && fid != "" {
-		if _, err := r.GetFrontend(fid); err != nil {
+		fe, err := r.GetFrontend(fid)
+		if err != nil {
 			return nil, models.ErrNotFound
 		}
+		feLBID, _ = fe["lb_id"].(string)
 	}
 	if bid, ok := next["backend_id"].(string); ok && bid != "" {
-		if _, err := r.GetBackend(bid); err != nil {
+		be, err := r.GetBackend(bid)
+		if err != nil {
 			return nil, models.ErrNotFound
+		}
+		// Validate backend belongs to the same LB as the frontend.
+		if feLBID != "" {
+			if beLB, _ := be["lb_id"].(string); beLB != feLBID {
+				return nil, fmt.Errorf("backend does not belong to the same LB as frontend: %w", models.ErrNotFound)
+			}
 		}
 	}
 	lbID, _ := next["lb_id"].(string)
