@@ -534,6 +534,8 @@ terraform init && terraform apply -auto-approve
 - **Block snapshots**: `parent_volume` is stored as `{"id": "<uuid>"}` only; name/type fields are absent. Sufficient for provider idempotency but not full API fidelity.
 - **No auth validation**: any non-empty `X-Auth-Token` accepted.
 - **No S3/Object Storage**.
+- **No cross-LB consistency checks**: LB routes and frontends don't validate that referenced frontend/backend belong to the same LB. The Terraform provider always generates consistent references from the resource graph, so this doesn't hide real bugs.
+- **RDB private network JSON refs not FK-enforced**: RDB instance endpoints store `private_network.id` inside JSON, not as a SQL FK column. Deleting a private network that's referenced by an RDB endpoint JSON succeeds in mockway but would fail on real Scaleway.
 
 ## Distribution
 
