@@ -3943,6 +3943,17 @@ func (r *Repository) UpdateLBRoute(id string, patch map[string]any) (map[string]
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
+	// Validate frontend_id and backend_id references if changed.
+	if fid, ok := next["frontend_id"].(string); ok && fid != "" {
+		if _, err := r.GetFrontend(fid); err != nil {
+			return nil, models.ErrNotFound
+		}
+	}
+	if bid, ok := next["backend_id"].(string); ok && bid != "" {
+		if _, err := r.GetBackend(bid); err != nil {
+			return nil, models.ErrNotFound
+		}
+	}
 	lbID, _ := next["lb_id"].(string)
 	b, err := marshalData(next)
 	if err != nil {
