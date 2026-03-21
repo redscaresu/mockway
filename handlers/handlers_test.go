@@ -3142,9 +3142,9 @@ func TestDeleteRDBInstanceCascadesToDatabasesAndUsers(t *testing.T) {
 	status, _ = testutil.DoGet(t, ts, "/rdb/v1/regions/fr-par/instances/"+instID)
 	require.Equal(t, 404, status)
 
-	// Databases are also gone — list returns empty.
-	_, body := testutil.DoList(t, ts, "/rdb/v1/regions/fr-par/instances/"+instID+"/databases")
-	require.Equal(t, float64(0), body["total_count"])
+	// Databases are also gone — listing on a deleted instance returns 404.
+	dbStatus, _ := testutil.DoList(t, ts, "/rdb/v1/regions/fr-par/instances/"+instID+"/databases")
+	require.Equal(t, 404, dbStatus)
 }
 
 func TestRegistryNamespaceLifecycle(t *testing.T) {

@@ -65,11 +65,20 @@ func (app *Application) CreateLBRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
-	// Derive lb_id by looking up the frontend that this route belongs to.
+	// Validate frontend_id and backend_id references exist.
 	var lbID string
 	if frontendID, _ := body["frontend_id"].(string); frontendID != "" {
-		if fe, err := app.repo.GetFrontend(frontendID); err == nil {
-			lbID, _ = fe["lb_id"].(string)
+		fe, err := app.repo.GetFrontend(frontendID)
+		if err != nil {
+			writeCreateError(w, err)
+			return
+		}
+		lbID, _ = fe["lb_id"].(string)
+	}
+	if backendID, _ := body["backend_id"].(string); backendID != "" {
+		if _, err := app.repo.GetBackend(backendID); err != nil {
+			writeCreateError(w, err)
+			return
 		}
 	}
 	out, err := app.repo.CreateLBRoute(lbID, body)

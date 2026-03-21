@@ -149,7 +149,12 @@ func (app *Application) CreateRDBDatabase(w http.ResponseWriter, r *http.Request
 }
 
 func (app *Application) ListRDBDatabases(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListRDBDatabases(chi.URLParam(r, "instance_id"))
+	instanceID := chi.URLParam(r, "instance_id")
+	if _, err := app.repo.GetRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	items, err := app.repo.ListRDBDatabases(instanceID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -181,7 +186,12 @@ func (app *Application) CreateRDBUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) ListRDBUsers(w http.ResponseWriter, r *http.Request) {
-	items, err := app.repo.ListRDBUsers(chi.URLParam(r, "instance_id"))
+	instanceID := chi.URLParam(r, "instance_id")
+	if _, err := app.repo.GetRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	items, err := app.repo.ListRDBUsers(instanceID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -283,6 +293,10 @@ func (app *Application) SetRDBPrivileges(w http.ResponseWriter, r *http.Request)
 
 func (app *Application) ListRDBPrivileges(w http.ResponseWriter, r *http.Request) {
 	instanceID := chi.URLParam(r, "instance_id")
+	if _, err := app.repo.GetRDBInstance(instanceID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	result, err := app.repo.ListRDBPrivileges(instanceID)
 	if err != nil {
 		writeDomainError(w, err)
