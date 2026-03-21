@@ -1176,6 +1176,10 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 				if err != nil {
 					return nil, models.ErrNotFound
 				}
+				// Reject if the IP is already attached to another server.
+				if existingServer, _ := ipRec["server_id"].(string); existingServer != "" {
+					return nil, models.ErrConflict
+				}
 				resolvedIPs = append(resolvedIPs, map[string]any{
 					"id":      ipID,
 					"address": ipRec["address"],

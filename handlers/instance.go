@@ -207,6 +207,19 @@ func normalizeServerImage(body map[string]any, zone string) {
 
 	imageID := imageRef
 	if _, err := uuid.Parse(imageRef); err != nil {
+		// Validate the label is a known marketplace image — reject typos.
+		known := false
+		for _, l := range knownMarketplaceLabels {
+			if l == imageRef {
+				known = true
+				break
+			}
+		}
+		if !known {
+			// Unknown label — leave as-is so the provider's marketplace
+			// lookup returns empty and fails with a clear error.
+			return
+		}
 		imageID = localImageID(imageRef, zone, "instance_sbs")
 	}
 
