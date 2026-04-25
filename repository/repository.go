@@ -3084,6 +3084,18 @@ func (r *Repository) CreateRedisCluster(zone string, data map[string]any) (map[s
 			"ips":  []any{fakePrivateIP()},
 			"port": float64(6379),
 		}}
+	} else if eps, ok := data["endpoints"].([]any); ok {
+		// Default port to 6379 on provider-supplied endpoints that omit it.
+		for _, ep := range eps {
+			if m, ok := ep.(map[string]any); ok {
+				if _, hasPort := m["port"]; !hasPort {
+					m["port"] = float64(6379)
+				}
+				if _, hasID := m["id"]; !hasID {
+					m["id"] = newID()
+				}
+			}
+		}
 	}
 	if _, ok := data["public_network"]; !ok {
 		data["public_network"] = []any{}
