@@ -2416,6 +2416,44 @@ func TestLBIPLifecycle(t *testing.T) {
 	require.Equal(t, 404, status)
 }
 
+func TestLBIPLbIDPersistedToState(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a standalone LB IP.
+	status, ip := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/ips", map[string]any{})
+	require.Equal(t, 200, status)
+	ipID := ip["id"].(string)
+	require.Nil(t, ip["lb_id"], "newly created IP should have nil lb_id")
+
+	// Create an LB using that pre-created IP.
+	status, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{
+		"name":  "test-lb",
+		"ip_id": ipID,
+	})
+	require.Equal(t, 200, status)
+	lbID := lb["id"].(string)
+
+	// The LB response should embed the IP with lb_id set.
+	ipArr := lb["ip"].([]any)
+	require.Len(t, ipArr, 1)
+	ipObj := ipArr[0].(map[string]any)
+	require.Equal(t, lbID, ipObj["lb_id"], "LB response IP should have lb_id")
+
+	// GET the IP directly — lb_id must be persisted to the lb_ips table.
+	status, gotIP := testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/ips/"+ipID)
+	require.Equal(t, 200, status)
+	require.Equal(t, lbID, gotIP["lb_id"], "GET /ips/{id} must show lb_id after LB creation")
+
+	// GET /mock/state — the IP in the lb section must have lb_id set.
+	state := testutil.GetState(t, ts)
+	lbState := state["lb"].(map[string]any)
+	stateIPs := lbState["ips"].([]any)
+	require.Len(t, stateIPs, 1)
+	stateIP := stateIPs[0].(map[string]any)
+	require.Equal(t, lbID, stateIP["lb_id"], "state lb_ips must show lb_id after LB creation")
+}
+
 func TestDNSZoneListReturnsZones(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -5076,6 +5114,50 @@ func TestRedisACLAndSettings(t *testing.T) {
 	require.Equal(t, 200, status)
 	endpoints := withEndpoints["endpoints"].([]any)
 	require.Len(t, endpoints, 1)
+}
+
+func TestRedisEndpointDefaultPort(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create Redis cluster — the default endpoint gets port 6379.
+	status, cluster := testutil.DoCreate(t, ts, "/redis/v1/zones/fr-par-1/clusters", map[string]any{
+		"name": "my-redis", "version": "7.0.12", "node_type": "RED1-MICRO",
+	})
+	require.Equal(t, 200, status)
+	clusterID := cluster["id"].(string)
+
+	// Verify default endpoint has port 6379.
+	defaultEPs := cluster["endpoints"].([]any)
+	require.Len(t, defaultEPs, 1)
+	require.Equal(t, float64(6379), defaultEPs[0].(map[string]any)["port"])
+
+	// Update endpoints with private_network but NO port field — simulates
+	// what the Terraform provider sends when adding a private_network block.
+	status, updated := doPut(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID+"/endpoints", map[string]any{
+		"endpoints": []any{
+			map[string]any{
+				"private_network": map[string]any{
+					"id": "pn-1234",
+				},
+			},
+		},
+	})
+	require.Equal(t, 200, status)
+
+	eps := updated["endpoints"].([]any)
+	require.Len(t, eps, 1)
+	ep := eps[0].(map[string]any)
+	require.Equal(t, float64(6379), ep["port"], "endpoint missing port should default to 6379")
+
+	// Verify via GET /mock/state too.
+	state := testutil.GetState(t, ts)
+	redisState := state["redis"].(map[string]any)
+	clusters := redisState["clusters"].([]any)
+	require.Len(t, clusters, 1)
+	stateEPs := clusters[0].(map[string]any)["endpoints"].([]any)
+	require.Len(t, stateEPs, 1)
+	require.Equal(t, float64(6379), stateEPs[0].(map[string]any)["port"], "state endpoint must have port 6379")
 }
 
 func TestLBRegionalAPI(t *testing.T) {

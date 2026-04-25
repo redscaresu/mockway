@@ -1234,7 +1234,9 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 		for _, raw := range rawIPs {
 			if ipMap, ok := raw.(map[string]any); ok {
 				if ipID, ok := ipMap["id"].(string); ok && ipID != "" {
-					_, _ = r.UpdateIP(ipID, map[string]any{"server": serverID})
+					if _, err := r.UpdateIP(ipID, map[string]any{"server": serverID}); err != nil {
+						return nil, fmt.Errorf("attach public IP %s to server: %w", ipID, err)
+					}
 				}
 			}
 		}
@@ -1561,7 +1563,9 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 	}
 	// Persist lb_id back to the lb_ips table so GET /ips/{id} reflects the attachment.
 	if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
-		_, _ = r.UpdateLBIP(ipEntry["id"].(string), map[string]any{"lb_id": id})
+		if _, err := r.UpdateLBIP(ipEntry["id"].(string), map[string]any{"lb_id": id}); err != nil {
+			return nil, fmt.Errorf("persist lb_id to lb_ips: %w", err)
+		}
 	}
 	return data, nil
 }
@@ -1633,7 +1637,9 @@ func (r *Repository) DeleteLB(id string) error {
 		}
 		ipRows.Close()
 		for _, u := range updates {
-			_, _ = tx.Exec("UPDATE lb_ips SET data = ? WHERE id = ?", u.data, u.id)
+			if _, err := tx.Exec("UPDATE lb_ips SET data = ? WHERE id = ?", u.data, u.id); err != nil {
+				return fmt.Errorf("detach lb_ip %s: %w", u.id, err)
+			}
 		}
 	}
 
@@ -3101,6 +3107,17 @@ func (r *Repository) UpdateRedisCluster(id string, patch map[string]any) (map[st
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
+	// Default port to 6379 on any endpoint missing it — the provider may
+	// send endpoints with private_network/ipam_config but omit port.
+	if eps, ok := next["endpoints"].([]any); ok {
+		for _, ep := range eps {
+			if m, ok := ep.(map[string]any); ok {
+				if _, hasPort := m["port"]; !hasPort {
+					m["port"] = float64(6379)
+				}
+			}
+		}
+	}
 	zone, _ := next["zone"].(string)
 	b, err := marshalData(next)
 	if err != nil {
@@ -3781,6 +3798,15 @@ func (r *Repository) SetRedisEndpoints(clusterID string, endpoints []any) (map[s
 	current, err := r.getJSONByID("redis_clusters", "id", clusterID)
 	if err != nil {
 		return nil, err
+	}
+	// Default port to 6379 if not provided — the provider may send endpoints
+	// with only private_network / ipam_config and omit the port field.
+	for _, ep := range endpoints {
+		if m, ok := ep.(map[string]any); ok {
+			if _, hasPort := m["port"]; !hasPort {
+				m["port"] = float64(6379)
+			}
+		}
 	}
 	next := cloneMap(current)
 	next["endpoints"] = endpoints
