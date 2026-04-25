@@ -2454,6 +2454,36 @@ func TestLBIPLbIDPersistedToState(t *testing.T) {
 	require.Equal(t, lbID, stateIP["lb_id"], "state lb_ips must show lb_id after LB creation")
 }
 
+func TestCreateLBWithIPIDs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// Create a standalone LB IP.
+	status, ip := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/ips", map[string]any{})
+	require.Equal(t, 200, status)
+	ipID := ip["id"].(string)
+
+	// Create an LB using ip_ids (array) instead of ip_id (string).
+	status, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{
+		"name":   "test-lb-ip-ids",
+		"ip_ids": []any{ipID},
+	})
+	require.Equal(t, 200, status)
+	lbID := lb["id"].(string)
+
+	// The LB response should embed the IP with lb_id set.
+	ipArr := lb["ip"].([]any)
+	require.Len(t, ipArr, 1)
+	ipObj := ipArr[0].(map[string]any)
+	require.Equal(t, ipID, ipObj["id"], "LB response IP id should match the pre-created IP")
+	require.Equal(t, lbID, ipObj["lb_id"], "LB response IP should have lb_id set")
+
+	// GET the IP directly — lb_id must be persisted to the lb_ips table.
+	status, gotIP := testutil.DoGet(t, ts, "/lb/v1/zones/fr-par-1/ips/"+ipID)
+	require.Equal(t, 200, status)
+	require.Equal(t, lbID, gotIP["lb_id"], "GET /ips/{id} must show lb_id after LB creation via ip_ids")
+}
+
 func TestDNSZoneListReturnsZones(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()

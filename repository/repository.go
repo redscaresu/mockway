@@ -1533,7 +1533,20 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 	id := newID()
 	data["id"] = id
 
-	// If ip_id is provided, use the existing LB IP; otherwise generate one inline.
+	// Resolve effective IP ID: ip_ids (array, newer field) takes precedence over ip_id (string).
+	resolvedIPID := ""
+	if ipIDs, ok := data["ip_ids"].([]any); ok && len(ipIDs) > 0 {
+		if first, ok := ipIDs[0].(string); ok && first != "" {
+			resolvedIPID = first
+		}
+	}
+	if resolvedIPID == "" {
+		if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
+			resolvedIPID = ipID
+		}
+	}
+
+	// If an IP ID was resolved, use the existing LB IP; otherwise generate one inline.
 	ipEntry := map[string]any{
 		"id":              newID(),
 		"ip_address":      fakePublicIP(),
@@ -1544,8 +1557,8 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 		"zone":            zone,
 		"region":          regionFromZone(zone),
 	}
-	if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
-		existing, err := r.GetLBIP(ipID)
+	if resolvedIPID != "" {
+		existing, err := r.GetLBIP(resolvedIPID)
 		if err != nil {
 			return nil, models.ErrNotFound
 		}
@@ -1562,7 +1575,7 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 		return nil, err
 	}
 	// Persist lb_id back to the lb_ips table so GET /ips/{id} reflects the attachment.
-	if ipID, ok := data["ip_id"].(string); ok && ipID != "" {
+	if resolvedIPID != "" {
 		if _, err := r.UpdateLBIP(ipEntry["id"].(string), map[string]any{"lb_id": id}); err != nil {
 			return nil, fmt.Errorf("persist lb_id to lb_ips: %w", err)
 		}
