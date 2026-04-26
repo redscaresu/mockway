@@ -60,7 +60,7 @@ mockway/
 | Load Balancer | `/lb/v1/zones/{zone}/` | lbs, frontends, backends, ACLs, routes, lb private-networks (attach/detach) |
 | Kubernetes | `/k8s/v1/regions/{region}/` | clusters, pools; versions list + GET by name; kubeconfig GET; nodes list; cluster/pool upgrade; set-type |
 | RDB | `/rdb/v1/regions/{region}/` | instances, databases, users, read-replicas; upgrade, certificate, ACLs (stateful), privileges, settings |
-| Redis | `/redis/v1/zones/{zone}/` | clusters; certificate GET |
+| Redis | `/redis/v1/zones/{zone}/` | clusters; certificate GET. Create must inject defaults: `organization_id`, `tags: []`, `acl_rules: []`, `endpoints`, `public_network`, `settings: {}`, `user_name` |
 | Registry | `/registry/v1/regions/{region}/` | namespaces (PATCH supported) |
 | IAM | `/iam/v1alpha1/` | applications, api-keys, policies, ssh-keys, users, groups, group-members |
 | IPAM | `/ipam/v1/regions/{region}/` | ips (list-only stub) |
