@@ -6,6 +6,54 @@ Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes
 
 > **This project is in early development.** The services in the compatibility matrix below have been verified against the real Scaleway Terraform provider with a full `apply → plan (no-op) → destroy` cycle. Other services may have handler code but have not been tested.
 
+## Architecture
+
+```
+              +------------------+
+              |  Terraform /     |   SCW_API_URL=http://localhost:8080
+              |  OpenTofu apply  |
+              +--------+---------+
+                       |
+                       v
+              +-----------------------------+
+              |   mockway HTTP server       |
+              |   chi router, port :8080    |
+              +-----+-----------------+-----+
+                    |                 |
+        +-----------+--------+ +------+---------------+
+        | Scaleway routes    | | Admin routes         |
+        |  /instance/v1/...  | |  /mock/state         |
+        |  /lb/v1/...        | |  /mock/reset         |
+        |  /rdb/v1/...       | |  /mock/snapshot      |
+        |  /vpc/v1/...       | |  /mock/restore       |
+        |  /k8s/v1/...       | |                      |
+        |  /iam/v1alpha1/... | | (no auth)            |
+        |  /redis/v1/...     | +----------------------+
+        |  /registry/v1/...  |          |
+        |  /domain/v2beta1   |          |
+        |  /ipam/v1/...      |          |
+        |  /block/v1alpha1   |          |
+        |  ...               |          |
+        +---------+----------+          |
+                  |                     |
+                  v                     v
+              +---------------------------------+
+              |   SQLite repository             |
+              |   - PRAGMA foreign_keys = ON    |
+              |   - SetMaxOpenConns(1)          |
+              |   - .snapshot file on demand    |
+              +---------------------------------+
+
+   Auth header  : X-Auth-Token (any non-empty value accepted)
+   Resource ids : UUIDv4
+   Timestamps   : RFC3339
+   Drift contract: apply -> plan (no-op exit 0) -> destroy
+```
+
+## Consumer
+
+[`infrafactory`](https://github.com/redscaresu/infrafactory) drives mockway as Layer-2 mock-deploy in a deterministic generate → validate → apply → destroy loop. Its cross-repo e2e helpers (`internal/e2e/helpers.go::StartMockway`) start mockway from this source tree on a free port for every test, so any mockway change you ship is exercised by infrafactory's Scaleway training scenarios automatically.
+
 ## Install
 
 ```bash
