@@ -1,0 +1,3 @@
+[allowlist]
+paths = ["specs/"]
+description = "API spec files contain placeholder example passwords from the official Scaleway spec"
