@@ -1,4 +1,12 @@
-.PHONY: test test-examples test-misconfigured spec-diff spec-diff-all
+.PHONY: install-hooks test test-examples test-misconfigured spec-diff spec-diff-all
+
+# install-hooks wires the tracked hook installer at .githooks/ via
+# core.hooksPath so the gitleaks + go test pre-commit gate runs locally
+# on every commit. Mirrors fakeaws/fakegcp pattern.
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Hooks installed: pre-commit will run gitleaks then go test."
 
 test:
 	go test ./...
