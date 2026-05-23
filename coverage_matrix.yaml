@@ -1,0 +1,366 @@
+# mockway coverage_matrix.yaml — sole source of truth for the
+# internal/audit/TestFullCoverageAudit gate. Each entry asserts four
+# invariants:
+#  (a) integration test in handlers/handlers_test.go matches
+#      integration_test_func_name
+#  (b) examples/working/<working_dir_name>/ exists OR working_exempt: true
+#      with a non-empty working_exempt_reason
+#  (c) examples/misconfigured/<misconfigured_dir_name>/ same contract
+#  (d) examples/updates/<updates_dir_name>/ same contract
+#
+# Each entry pairs a Scaleway-shaped resource_type (matching the
+# terraform-provider-scaleway resource name, e.g. scaleway_rdb_instance)
+# with the mockway service handler that backs it. Adding a new handler
+# file or example dir without a matching matrix entry is a CI failure;
+# every example directory under examples/{working,misconfigured,updates}/
+# MUST have either a matrix entry that names it or a documented
+# exemption on the closest entry.
+#
+# Schema:
+# - service: one of {block, domain, iam, instance, ipam, k8s, lb,
+#                    marketplace, rdb, redis, registry, vpc}
+# - resource_type: terraform-provider-scaleway resource id, e.g.
+#                  "scaleway_rdb_instance", "scaleway_lb_backend"
+# - working_dir_name / misconfigured_dir_name / updates_dir_name:
+#   per-tree directory under examples/{working,misconfigured,updates}/
+# - working_exempt / misconfigured_exempt / updates_exempt: bool, with
+#   *_exempt_reason: required iff exempt is true
+# - integration_test_func_name: regex matching ≥1 TestXxx in
+#   handlers/handlers_test.go (default: ^Test.*<resource_type-camel-cased>.*)
+#
+# Scaleway provider version pin: scaleway/scaleway ≥ 2.50. Bumps
+# require a single PR updating this comment and every example's
+# required_providers block.
+
+entries:
+  # ---------- block ----------
+  - service: block
+    resource_type: scaleway_block_volume
+    working_dir_name: block_volume
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Block volume has no inbound FK refs of its own; the volume<-snapshot FK is exercised in block_snapshot_missing_volume."
+    updates_dir_name: update_block_volume
+    integration_test_func_name: "^TestBlockVolumeLifecycle$"
+  - service: block
+    resource_type: scaleway_block_snapshot
+    working_dir_name: block_snapshot
+    misconfigured_dir_name: block_snapshot_missing_volume
+    updates_exempt: true
+    updates_exempt_reason: "Block snapshots at v1 are set-once (no UpdateSnapshot endpoint surfaced by the provider); lifecycle exercised in TestBlockSnapshotDelete."
+    integration_test_func_name: "^TestBlockSnapshotDelete$"
+
+  # ---------- domain ----------
+  - service: domain
+    resource_type: scaleway_domain_zone
+    working_dir_name: domain_zone
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Domain zone has no inbound FK refs at v1; record-on-missing-zone failures surface as 404 from the record handler and are covered by TestDNSRecordPatchAndList negative paths."
+    updates_exempt: true
+    updates_exempt_reason: "Zone configuration is set-once at v1 (no UpdateZone endpoint surfaced)."
+    integration_test_func_name: "^TestDNSZoneCRUDLifecycle$"
+  - service: domain
+    resource_type: scaleway_domain_record
+    working_dir_name: domain_zone
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Record-on-missing-zone 404 is asserted in TestDNSRecordPatchAndList; record FK gates have no orthogonal misconfigured tofu example."
+    updates_exempt: true
+    updates_exempt_reason: "Record updates round-trip through PATCH /records — exercised inline in working/domain_zone's apply path; transactional change-set covered by TestDomainRecordPatchMultipleChanges."
+    integration_test_func_name: "^TestDomainRecordPatchSetChangeType$"
+
+  # ---------- iam ----------
+  - service: iam
+    resource_type: scaleway_iam_application
+    working_dir_name: iam_full
+    misconfigured_dir_name: app_stack_db_ref
+    updates_dir_name: update_iam_application
+    integration_test_func_name: "^TestIAMApplicationLifecycle$"
+  - service: iam
+    resource_type: scaleway_iam_api_key
+    working_dir_name: iam_full
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "API-key-without-application 404 asserted in TestFKReject_IAMAPIKey_BadApplicationID; standalone misconfigured tofu example would duplicate."
+    updates_exempt: true
+    updates_exempt_reason: "API key attributes are set-once at v1 (rotation is delete + recreate); TestUpdateIAMAPIKey covers the no-op patch path."
+    integration_test_func_name: "^TestIAMAPIKeyLifecycleAndRules$"
+  - service: iam
+    resource_type: scaleway_iam_policy
+    working_dir_name: iam_full
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Policy FK violations (missing application, missing user) are asserted in TestFKReject_IAMPolicy_BadApplicationID + TestFKReject_IAMRule_BadPolicyID."
+    updates_dir_name: update_iam_policy
+    integration_test_func_name: "^TestIAMPolicyLifecycle$"
+  - service: iam
+    resource_type: scaleway_iam_ssh_key
+    working_dir_name: iam_full
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "SSH key has no inbound FK refs; key-on-missing-user is not modelled (keys belong to the account at v1)."
+    updates_dir_name: update_iam_ssh_key
+    integration_test_func_name: "^TestIAMAndAccountSSHKeyCompatibility$"
+  - service: iam
+    resource_type: scaleway_iam_user
+    working_exempt: true
+    working_exempt_reason: "User CRUD is asserted in TestIAMUserLifecycle; standalone working/iam_user/ would duplicate that coverage (and aws-style working dirs for IAM live under iam_full)."
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "User has no inbound FK refs at v1; group-on-missing-user is exercised by iam_group_nonexistent_user (attributed to scaleway_iam_group)."
+    updates_exempt: true
+    updates_exempt_reason: "User attribute mutation is out of scope at v1 (no UpdateUser endpoint surfaced)."
+    integration_test_func_name: "^TestIAMUserLifecycle$"
+  - service: iam
+    resource_type: scaleway_iam_group
+    working_exempt: true
+    working_exempt_reason: "Group CRUD + member management is asserted in TestIAMGroupLifecycle + TestSetIAMGroupMembers; standalone working/iam_group/ would duplicate."
+    misconfigured_dir_name: iam_group_nonexistent_user
+    updates_exempt: true
+    updates_exempt_reason: "Group attribute mutation is out of scope at v1; membership churn (add/remove) is exercised in TestSetIAMGroupMembers."
+    integration_test_func_name: "^TestIAMGroupLifecycle$"
+
+  # ---------- instance ----------
+  - service: instance
+    resource_type: scaleway_instance_server
+    working_dir_name: basic_instance
+    misconfigured_dir_name: security_group_name_not_id
+    updates_dir_name: rename_server
+    integration_test_func_name: "^TestInstanceServerLifecycle$"
+  - service: instance
+    resource_type: scaleway_instance_security_group
+    working_exempt: true
+    working_exempt_reason: "Security group lifecycle is exercised inside working/basic_instance; standalone working/security_group/ would duplicate."
+    misconfigured_dir_name: security_group_name_not_id
+    updates_dir_name: update_security_group
+    integration_test_func_name: "^TestSecurityGroupPatchLifecycle$"
+  - service: instance
+    resource_type: scaleway_instance_ip
+    working_dir_name: instance_ip
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Instance IP has no inbound FK refs at v1; attach-to-missing-server is asserted in TestFKReject_Server_BadIPID."
+    updates_dir_name: update_instance_ip
+    integration_test_func_name: "^TestUpdateInstanceIP$"
+  - service: instance
+    resource_type: scaleway_instance_private_nic
+    working_exempt: true
+    working_exempt_reason: "Private NIC lifecycle is asserted inside vpc_and_private_network; standalone working/instance_private_nic/ would duplicate the same FK chain."
+    misconfigured_dir_name: nic_with_missing_private_network
+    updates_exempt: true
+    updates_exempt_reason: "Private NIC attributes are set-once at v1 (delete + recreate); cascade-on-server-delete asserted in TestPrivateNICCascadeOnServerDelete."
+    integration_test_func_name: "^TestPrivateNICHasPrivateIPsAndState$"
+  - service: instance
+    resource_type: scaleway_instance_volume
+    working_dir_name: instance_volume
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Instance-attached volume FK gates surface through the server payload (covered in TestCreateServerInjectsDefaultRootVolume + TestGetVolumeFromServerRootVolume)."
+    updates_exempt: true
+    updates_exempt_reason: "Instance volume attributes are set-once at v1 (resize is out of scope); lifecycle covered in TestInstanceVolumeLifecycle."
+    integration_test_func_name: "^TestInstanceVolumeLifecycle$"
+
+  # ---------- ipam ----------
+  - service: ipam
+    resource_type: scaleway_ipam_ip
+    working_exempt: true
+    working_exempt_reason: "IPAM is a list-only stub at v1 (README \"Not Implemented\" matrix); IP addresses are auto-managed by the parent resource (server/NIC/LB). Standalone working/ipam_ip/ would have nothing to apply."
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Stub list endpoint cannot fail in a misconfigure-worthy way; TestIPAMReturnsEmptyForNonexistentNIC pins the empty-list contract."
+    updates_exempt: true
+    updates_exempt_reason: "Stub list endpoint has no mutable state; detach/move semantics are covered in TestIPAMDetachAndMove."
+    integration_test_func_name: "^TestIPAMIPLifecycle$"
+
+  # ---------- k8s ----------
+  - service: k8s
+    resource_type: scaleway_k8s_cluster
+    working_dir_name: kubernetes_cluster
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Cluster-side FK gates (pool-on-missing-cluster) attributed to scaleway_k8s_pool's misconfigured entry; cascade-on-cluster-delete covered in TestDeleteClusterCascadesPools."
+    updates_dir_name: update_k8s_cluster
+    integration_test_func_name: "^TestUpdateClusterPersists$"
+  - service: k8s
+    resource_type: scaleway_k8s_pool
+    working_exempt: true
+    working_exempt_reason: "Pool lifecycle is exercised inside working/kubernetes_cluster and working/k8s_with_auto_upgrade; standalone working/k8s_pool/ would duplicate."
+    misconfigured_dir_name: k8s_pool_missing_cluster
+    updates_exempt: true
+    updates_exempt_reason: "Pool upgrades round-trip through PATCH /pools/{id} — exercised in TestK8sUpgradePool + TestUpdatePoolPersists; covered by the same update_k8s_cluster bundle which patches both the cluster and its pool."
+    integration_test_func_name: "^TestUpdatePoolPersists$"
+
+  # ---------- lb ----------
+  - service: lb
+    resource_type: scaleway_lb
+    working_dir_name: load_balancer
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "LB-with-dependents-delete refusal is asserted in TestLBDeleteRejectsWhenDependentsExist; no orthogonal misconfigured tofu example."
+    updates_dir_name: update_lb
+    integration_test_func_name: "^TestUpdateLBPersists$"
+  - service: lb
+    resource_type: scaleway_lb_backend
+    working_dir_name: load_balancer
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Backend FK-on-missing-LB asserted in TestFKReject_LBBackend_BadLBID; standalone misconfigured example would duplicate."
+    updates_dir_name: update_lb_backend
+    integration_test_func_name: "^TestUpdateBackendPersists$"
+  - service: lb
+    resource_type: scaleway_lb_frontend
+    working_dir_name: load_balancer
+    misconfigured_dir_name: lb_missing_backend
+    updates_exempt: true
+    updates_exempt_reason: "Frontend updates round-trip through PATCH /frontends/{id} — exercised in TestUpdateFrontendPersists; covered by the broader update_lb_backend bundle."
+    integration_test_func_name: "^TestUpdateFrontendPersists$"
+  - service: lb
+    resource_type: scaleway_lb_acl
+    working_dir_name: lb_with_acl
+    misconfigured_dir_name: lb_acl_missing_frontend
+    updates_exempt: true
+    updates_exempt_reason: "ACL updates are full-replacement PUTs — exercised in TestLBACLGetUpdateDelete; partial-update has no v1 contract."
+    integration_test_func_name: "^TestLBACLGetUpdateDelete$"
+  - service: lb
+    resource_type: scaleway_lb_route
+    working_dir_name: lb_with_route
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Route-on-missing-frontend 404 is asserted in TestLBRouteLifecycle; standalone misconfigured tofu example would duplicate."
+    updates_exempt: true
+    updates_exempt_reason: "LB route updates are full-replacement PUTs at v1 — partial-update has no v1 contract; lb route lifecycle covered in TestLBRouteLifecycle. (update_vpc_route exercises scaleway_vpc_route, not scaleway_lb_route.)"
+    integration_test_func_name: "^TestLBRouteLifecycle$"
+  - service: lb
+    resource_type: scaleway_lb_certificate
+    working_dir_name: lb_with_certificate
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Certificate FK-on-missing-LB surfaces through the LB handler (covered in TestLBCertificateLifecycle)."
+    updates_exempt: true
+    updates_exempt_reason: "Certificates at v1 are immutable (rotation is delete + recreate); lifecycle covered in TestLBCertificateLifecycle."
+    integration_test_func_name: "^TestLBCertificateLifecycle$"
+  - service: lb
+    resource_type: scaleway_lb_ip
+    working_dir_name: lb_with_ip
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "LB IP FK gates surface through the LB attach handler (covered in TestCreateLBWithIPIDs + TestLBIPLbIDPersistedToState)."
+    updates_exempt: true
+    updates_exempt_reason: "LB IP attributes are set-once at v1; TestUpdateLBIP pins the no-op update contract."
+    integration_test_func_name: "^TestLBIPLifecycle$"
+  - service: lb
+    resource_type: scaleway_lb_private_network
+    working_dir_name: lb_private_network
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "LB-to-private-network attach FK gate asserted in TestFKReject_LBPrivateNetwork_BadPrivateNetworkID; detach contract pinned by TestDetachLBPrivateNetwork."
+    updates_exempt: true
+    updates_exempt_reason: "Attachment is delete + recreate at v1 (no UpdateAttach endpoint); covered by attach+detach in working/lb_private_network."
+    integration_test_func_name: "^TestAttachLBPrivateNetworkResponseHasLBObject$"
+
+  # ---------- marketplace ----------
+  - service: marketplace
+    resource_type: scaleway_marketplace_image
+    working_exempt: true
+    working_exempt_reason: "Marketplace ships image label resolution for the Instance service (no Terraform resource of its own — README \"Not Implemented\" + Provider Compatibility Matrix). Image catalog is exercised via the Instance create path (TestCreateServerNormalizesImageLabelToObject)."
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "No misconfigure surface — marketplace handlers are read-only image-label lookups; unknown labels return empty (TestMarketplaceLocalImagesUnknownLabelEmpty)."
+    updates_exempt: true
+    updates_exempt_reason: "Marketplace catalog is read-only; no update path exists."
+    integration_test_func_name: "^TestMarketplaceLocalImagesListFilter$"
+
+  # ---------- rdb ----------
+  - service: rdb
+    resource_type: scaleway_rdb_instance
+    working_dir_name: rdb_instance
+    misconfigured_dir_name: app_stack_db_ref
+    updates_dir_name: update_rdb_instance
+    integration_test_func_name: "^TestUpdateRDBInstancePersists$"
+  - service: rdb
+    resource_type: scaleway_rdb_database
+    working_dir_name: rdb_instance
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Database-on-missing-instance 404 asserted in TestFKReject_RDBDatabase_BadInstanceID; cascade-on-instance-delete covered by TestDeleteRDBInstanceCascadesToDatabasesAndUsers."
+    updates_exempt: true
+    updates_exempt_reason: "Database attributes are set-once at v1 (no UpdateDatabase endpoint surfaced); duplicate-name rejection covered by TestRDBDatabaseDuplicateNameReturns409."
+    integration_test_func_name: "^TestRDBDatabaseDefaultFields$"
+  - service: rdb
+    resource_type: scaleway_rdb_user
+    working_dir_name: rdb_instance
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "User-on-missing-instance 404 asserted in TestFKReject_RDBUser_BadInstanceID; cascade-on-instance-delete covered by TestDeleteRDBInstanceCascadesToDatabasesAndUsers."
+    updates_exempt: true
+    updates_exempt_reason: "User attribute mutation is exercised in TestUpdateRDBUserPersists; the standing pattern is no-op-on-id-mutation (TestUpdateRDBUserCannotMutateNameOrInstanceID)."
+    integration_test_func_name: "^TestUpdateRDBUserPersists$"
+  - service: rdb
+    resource_type: scaleway_rdb_acl
+    working_dir_name: rdb_with_acl
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "ACL gates surface through the instance handler (covered in TestRDBACLsSetAndList + TestDeleteRDBACLsEndpoint)."
+    updates_exempt: true
+    updates_exempt_reason: "ACL updates are full-replacement Sets at v1 (no partial-update endpoint); covered by TestRDBACLsSetAndList."
+    integration_test_func_name: "^TestRDBACLsSetAndList$"
+  - service: rdb
+    resource_type: scaleway_rdb_read_replica
+    working_dir_name: rdb_read_replica
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Read-replica FK gates surface through the instance handler (covered in TestRDBReadReplicaLifecycle + TestRDBReadReplicaEndpointAndPromoteReset)."
+    updates_exempt: true
+    updates_exempt_reason: "Read replica is set-once at v1 (promote is exercised in TestRDBReadReplicaEndpointAndPromoteReset; no UpdateReadReplica endpoint surfaced)."
+    integration_test_func_name: "^TestRDBReadReplicaLifecycle$"
+
+  # ---------- redis ----------
+  - service: redis
+    resource_type: scaleway_redis_cluster
+    working_dir_name: redis_cluster
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Redis cluster has no inbound FK refs at v1; the standing pattern is no-op-on-id-mutation (TestUpdateRedisClusterCannotMutateID)."
+    updates_dir_name: update_redis_cluster
+    integration_test_func_name: "^TestUpdateRedisClusterPersists$"
+
+  # ---------- registry ----------
+  - service: registry
+    resource_type: scaleway_registry_namespace
+    working_dir_name: registry_namespace
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Registry namespace has no inbound FK refs at v1; standing pattern is no-op-on-id-mutation (TestUpdateRegistryNamespaceCannotMutateID)."
+    updates_dir_name: update_registry_namespace
+    integration_test_func_name: "^TestUpdateRegistryNamespacePersists$"
+
+  # ---------- vpc ----------
+  - service: vpc
+    resource_type: scaleway_vpc
+    working_dir_name: vpc_and_private_network
+    misconfigured_dir_name: vpc_deleted_before_private_network
+    updates_dir_name: update_vpc
+    integration_test_func_name: "^TestUpdateVPC$"
+  - service: vpc
+    resource_type: scaleway_vpc_private_network
+    working_dir_name: vpc_and_private_network
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Private-network-on-missing-VPC 404 is asserted in TestFKReject_PrivateNetwork_BadVPCID; destroy-ordering covered by misconfigured/vpc_deleted_before_private_network (attributed to scaleway_vpc)."
+    updates_dir_name: update_private_network
+    integration_test_func_name: "^TestUpdatePrivateNetwork$"
+  - service: vpc
+    resource_type: scaleway_vpc_route
+    working_dir_name: vpc_route
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Route-on-missing-VPC 404 is asserted in TestVPCRouteFK404OnBadVPC."
+    updates_dir_name: update_vpc_route
+    integration_test_func_name: "^TestVPCRouteCRUDLifecycle$"
+  - service: vpc
+    resource_type: scaleway_vpc_public_gateway
+    working_exempt: true
+    working_exempt_reason: "Public gateway is handler-only at v1 (README Provider Compatibility Matrix); no verified end-to-end working example yet."
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Public gateway has no apply-time misconfigure surface that isn't already covered by the gateway_network FK gate."
+    updates_exempt: true
+    updates_exempt_reason: "Public gateway is set-once at v1; lifecycle covered in TestVPCPublicGatewayCRUDLifecycle."
+    integration_test_func_name: "^TestVPCPublicGatewayCRUDLifecycle$"
+  - service: vpc
+    resource_type: scaleway_vpc_gateway_network
+    working_exempt: true
+    working_exempt_reason: "Gateway network is handler-only at v1 (README Provider Compatibility Matrix); known enable_masquerade drift documented in Known Limitations means no end-to-end working example yet."
+    misconfigured_exempt: true
+    misconfigured_exempt_reason: "Gateway network FK gates surface through the public_gateway + private_network handlers (covered in TestVPCGatewayNetworkCRUDLifecycle)."
+    updates_exempt: true
+    updates_exempt_reason: "Gateway network is set-once at v1 (enable_masquerade drift documented; no UpdateGatewayNetwork endpoint surfaced at v1)."
+    integration_test_func_name: "^TestVPCGatewayNetworkCRUDLifecycle$"
+
+  # ---------- multi-resource bundles (no canonical single resource_type) ----------
+  # The following examples exercise FK gates across multiple services
+  # and are credited to the resource whose handler issues the rejection:
+  #   - misconfigured/app_stack_db_ref       -> credited to scaleway_rdb_instance + scaleway_iam_application
+  #   - misconfigured/cross_state_orphan     -> the IAM cross-state scenario; the rejection is from the IAM handler.
+  - service: iam
+    resource_type: scaleway_iam_cross_state_orphan
+    working_exempt: true
+    working_exempt_reason: "Synthetic resource_type representing the cross-state-orphan scenario (README \"What mockway catches\" §3). The scenario exercises an IAM application owned by one Terraform state and referenced from another — no standalone working example exists by design."
+    misconfigured_dir_name: cross_state_orphan
+    updates_exempt: true
+    updates_exempt_reason: "Cross-state scenario is destroy-time-only; no update path."
+    integration_test_func_name: "^TestIAMApplicationLifecycle$"
