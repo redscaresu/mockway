@@ -1,0 +1,17 @@
+# examples/known_broken.yaml — known-broken examples allowlisted from
+# the provider_smoke_test idempotency gate. Each entry: a directory
+# path relative to examples/, the failure symptom, and a tracking
+# ticket id in infrafactory/BACKLOG.md.
+#
+# Removing an entry is the closing step of the matching fidelity-fix
+# ticket. If a dir on this list starts PASSING idempotency, the test
+# FAILS ("congratulations, remove this entry") — ratchet-only-tighten.
+#
+# New entries require a code-review comment justifying the deferral.
+#
+# Empty state is the goal. The S53 plan referenced
+# infrafactory/docs/plans/slice-53-plan.md seeded basic_instance based
+# on a stale observation; running the walker confirms it is idempotent
+# against the current mockway, so no entry is needed.
+
+entries: []
