@@ -42,3 +42,12 @@ examples/**/terraform.tfstate
 examples/**/terraform.tfstate.backup
 examples/**/terraform.tfstate.*.backup
 examples/**/*.db
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+service-account.json
+token.json
