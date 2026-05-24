@@ -60,6 +60,16 @@ Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes
 go install github.com/redscaresu/mockway/cmd/mockway@latest
 ```
 
+### Docker
+
+Pre-built multi-arch images are published to GitHub Container Registry on every push to `main`:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/redscaresu/mockway:latest --port 8080
+```
+
+The Dockerfile in the repo root produces a `~15MB` static image (multi-stage build from `golang:1.25-alpine`).
+
 ## Run
 
 ```bash
@@ -148,6 +158,42 @@ Example: [`misconfigured/vpc_deleted_before_private_network`](examples/misconfig
 Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state_orphan)
 
 ---
+
+## API compatibility
+
+The point of mockway is to be wire-shape compatible with the real `scaleway/scaleway` provider — every byte the provider sends or expects to receive must match what real Scaleway would do, or the provider detects "drift" and the apply loop fails. Three guardrails enforce this; they're identical across [`mockway`](https://github.com/redscaresu/mockway) (Scaleway), [`fakegcp`](https://github.com/redscaresu/fakegcp) (GCP), and [`fakeaws`](https://github.com/redscaresu/fakeaws) (AWS).
+
+### 1. Three example trees, auto-discovered
+
+Every directory under `examples/` is an executable contract against a real Terraform/OpenTofu provider:
+
+| Tree | Contract |
+|---|---|
+| `examples/working/<svc>/` | `apply → plan -detailed-exitcode 0 → destroy` — second plan MUST be a no-op |
+| `examples/misconfigured/<svc>/` | `apply` MUST fail with a documented error indicator (404 / 409 / conflict / not_found) |
+| `examples/updates/<svc>/` | `apply -var-file=v1.tfvars → plan no-op → apply -var-file=v2.tfvars → plan no-op → destroy` |
+
+`e2e/provider_smoke_test.go` walks the three trees with `runtime.Caller` and registers each subdirectory as its own `t.Run` sub-test. Adding a directory adds a test — no per-example test wiring. Each sub-test boots a fresh mockway on a kernel-assigned port so there's no cross-example state leakage.
+
+The **idempotency gate** (`plan -detailed-exitcode 0`) is the strongest compatibility signal: if mockway returns a single field with the wrong case, type, or default, the provider sees drift on the second plan and the test fails. The `lb` (`ip_ids` array vs deprecated string) and `redis` (default port in Set + Update) fixes were both caught by this gate.
+
+### 2. `examples/known_broken.yaml` — ratchet-only allowlist
+
+Working examples whose idempotency gate is currently expected to fail are listed in `examples/known_broken.yaml`, each entry pointing at a tracking ticket in [`infrafactory/BACKLOG.md`](https://github.com/redscaresu/infrafactory/blob/main/BACKLOG.md). The smoke harness skips the drift assertion for allowlisted dirs but still runs `apply + destroy`.
+
+The list is **ratchet-only-tighten**: if an allowlisted dir starts passing idempotency, the test fails with `"congratulations, remove this entry"`. Compatibility coverage can only grow, never silently regress.
+
+### 3. Cross-repo e2e from infrafactory
+
+[`infrafactory`](https://github.com/redscaresu/infrafactory) builds mockway from this source tree on a free port for every gated Scaleway e2e test (`TestE2E_Scaleway*` + `TestE2E_FullStackParis` in `internal/e2e/`, gated by `INFRAFACTORY_ENABLE_E2E=1`). Those tests drive scenarios end-to-end through infrafactory's harness (plan → mock-apply → topology derivation → destroy), so a compatibility regression surfaces in two places: the local `MOCKWAY_ENABLE_E2E=1 go test ./e2e/...` and the upstream infrafactory CI.
+
+### Adding coverage for a new resource
+
+1. Add an `examples/working/<svc>/` directory with `providers.tf` + `main.tf`.
+2. Run `MOCKWAY_ENABLE_E2E=1 go test ./e2e/...` — auto-discovery picks it up.
+3. If it drifts: either fix the handler, or (if the fix is non-trivial) add a `known_broken.yaml` entry pointing at a new BACKLOG ticket.
+4. Mirror with `examples/misconfigured/<svc>/` (FK / validation paths) and `examples/updates/<svc>/` (update paths) as the service warrants.
+5. Add a `TestE2E_Scaleway<Svc>` in infrafactory's `internal/e2e/scaleway_services_test.go` so the cross-repo gate covers the scenario flow too.
 
 ## Features
 
