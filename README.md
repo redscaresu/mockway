@@ -1,5 +1,9 @@
 # mockway
 
+[![ci](https://github.com/redscaresu/mockway/actions/workflows/ci.yml/badge.svg)](https://github.com/redscaresu/mockway/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Go 1.24+](https://img.shields.io/badge/Go-1.24%2B-00ADD8?logo=go)](go.mod)
+
 Local mock of the Scaleway API for offline OpenTofu and Terraform testing.
 
 Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes Scaleway-like API routes on one port. State is kept in-memory by default — each run starts clean, which is ideal for test cycles. Use `--db ./mockway.db` if you need state to survive restarts.
