@@ -58,6 +58,22 @@ Mockway runs as a single Go binary, tracks resource state in SQLite, and exposes
 
 [`infrafactory`](https://github.com/redscaresu/infrafactory) drives mockway as Layer-2 mock-deploy in a deterministic generate → validate → apply → destroy loop. Its cross-repo e2e helpers (`internal/e2e/helpers.go::StartMockway`) start mockway from this source tree on a free port for every test, so any mockway change you ship is exercised by infrafactory's Scaleway training scenarios automatically.
 
+### One-shot demo (with sibling repos)
+
+If you've cloned the four-repo layout, the easiest way to see mockway
+in action is via [`infrafactory`](https://github.com/redscaresu/infrafactory)'s
+`make up`:
+
+```bash
+cd ~/dev && for r in infrafactory fakeaws fakegcp mockway; do git clone https://github.com/redscaresu/$r.git; done
+cd infrafactory && make up
+./bin/infrafactory run scenarios/training/web-app-paris.yaml --config infrafactory.yaml   # drives mockway end-to-end
+make down
+```
+
+That brings up mockway on `:8080`, exercises a Scaleway scenario
+through `tofu apply → test → destroy`, and tears everything down.
+
 ## Install
 
 ```bash
