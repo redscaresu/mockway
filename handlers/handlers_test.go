@@ -3107,6 +3107,42 @@ func TestBlockVolumeEndpoints(t *testing.T) {
 	require.Equal(t, "not_found", body["type"])
 }
 
+// TestBlockVolumeEndpointsV1Alias pins the v1 ↔ v1alpha1 dual-prefix
+// behavior. scaleway-sdk-go switched from /block/v1alpha1 to /block/v1
+// around terraform-provider-scaleway 2.76.0; the 2026-06-02
+// infrafactory deterministic sweep surfaced this when
+// scaleway_instance_server destroy started 501'ing on
+// `GET /block/v1/zones/.../volumes/{id}` (mockway only served
+// v1alpha1). Both prefixes must hit the same handlers.
+func TestBlockVolumeEndpointsV1Alias(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoCreate(t, ts,
+		"/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "v1-alias-test"},
+	)
+	require.Equal(t, 200, status)
+	server := unwrapInstanceResource(body)
+	volumes := server["volumes"].(map[string]any)
+	root := volumes["0"].(map[string]any)
+	volumeID := root["id"].(string)
+	require.NotEmpty(t, volumeID)
+
+	// v1 (new SDK path) — GET must work and return the same volume.
+	status, body = testutil.DoGet(t, ts, "/block/v1/zones/fr-par-1/volumes/"+volumeID)
+	require.Equal(t, 200, status, "block/v1 GET volume must succeed (provider 2.76.0+ SDK path)")
+	require.Equal(t, volumeID, body["id"])
+
+	// v1 LIST must work too.
+	status, _ = testutil.DoGet(t, ts, "/block/v1/zones/fr-par-1/volumes")
+	require.Equal(t, 200, status, "block/v1 LIST volumes must succeed")
+
+	// v1 DELETE returns 204 like v1alpha1.
+	status = testutil.DoDelete(t, ts, "/block/v1/zones/fr-par-1/volumes/"+volumeID)
+	require.Equal(t, 204, status)
+}
+
 func TestUpdateCluster(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
