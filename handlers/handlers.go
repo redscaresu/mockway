@@ -391,7 +391,22 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Put("/groups/{group_id}/members", app.SetIAMGroupMembers)
 		})
 
-		r.Route("/block/v1alpha1/zones/{zone}", func(r chi.Router) {
+		// Block Storage API. scaleway-sdk-go switched from v1alpha1 to
+		// v1 around scaleway/scaleway-sdk-go@v1.0.0-beta.30 (rolled
+		// into terraform-provider-scaleway 2.76.0). Older provider
+		// versions still call v1alpha1. We register the same handlers
+		// under BOTH prefixes so both SDK generations work — same
+		// dual-prefix discipline as ADR-0014 in the infrafactory repo
+		// (host-only default, dual-prefix mock routes when an upstream
+		// SDK splits CREATE/READ paths across versions).
+		//
+		// Surfaced by the 2026-06-02 infrafactory deterministic sweep:
+		// compute-lb-multi-paris (and the other count-based-server
+		// scenarios) destroyed cleanly under provider 2.75.0 but
+		// 501'd under 2.76.0 with `GET /block/v1/zones/.../volumes/...`
+		// when the instance-server destroy looked up attached
+		// volumes.
+		blockRoutes := func(r chi.Router) {
 			r.Post("/volumes", app.CreateBlockVolumeHandler)
 			r.Get("/volumes", app.ListBlockVolumes)
 			r.Get("/volumes/{volume_id}", app.GetBlockVolumeHandler)
@@ -403,7 +418,9 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Patch("/snapshots/{snapshot_id}", app.UpdateBlockSnapshotHandler)
 			r.Delete("/snapshots/{snapshot_id}", app.DeleteBlockSnapshotHandler)
 			r.Get("/volume-types", app.ListBlockVolumeTypes)
-		})
+		}
+		r.Route("/block/v1alpha1/zones/{zone}", blockRoutes)
+		r.Route("/block/v1/zones/{zone}", blockRoutes)
 
 		r.Route("/ipam/v1/regions/{region}", func(r chi.Router) {
 			r.Get("/ips", app.ListIPAMIPs)
