@@ -425,3 +425,10 @@ Key packages:
 - `repository` — SQLite schema + CRUD/state logic
 - `models` — domain errors
 - `testutil` — shared integration test helpers
+
+## Documentation
+
+- [`AGENTS.md`](AGENTS.md) — fresh-agent entry point: layout, conventions, where to look for Scaleway wire shapes.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR contract, quality gates, pre-commit hook setup.
+- [`CHANGELOG.md`](CHANGELOG.md) — Keep a Changelog format.
+- [`infrafactory's auto-learning loop`](https://github.com/redscaresu/infrafactory/blob/main/docs/auto-learning-loop.md) — deep-dive on how infrafactory turns mockway failures (and its own LLM-generated HCL mistakes) into durable pitfalls. The S75 Scaleway phase-3 rule retirement (`scaleway_instance_private_nic` requirement, replaced by an N10-learned pitfall) is the closest worked example for Scaleway-side learning; the doc itself uses an aws-subnet example for breadth.
