@@ -6830,3 +6830,47 @@ func TestDNSZoneCRUDLifecycle(t *testing.T) {
 	status = testutil.DoDelete(t, ts, "/domain/v2beta1/dns-zones/myapp.com")
 	require.Equal(t, 204, status)
 }
+
+// TestDomainNotFoundCarriesResourceFields asserts that 404 responses from
+// the domain handlers include `resource` + `resource_id` JSON fields.
+// scaleway-sdk-go's ResourceNotFoundError formats Error() using these
+// values — without them the SDK prints "resource  with ID  is not found"
+// (note the double space) which is uninterpretable for both humans and
+// the auto-learning loop. See infrafactory S102.
+func TestDomainNotFoundCarriesResourceFields(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	// GET a non-existent zone.
+	status, body := testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones/missing.example.com")
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "dns_zone", body["resource"])
+	require.Equal(t, "missing.example.com", body["resource_id"])
+
+	// PATCH records on a non-existent zone (the path that triggered the
+	// original web-app-paris failure).
+	status, body = doPatch(t, ts, "/domain/v2beta1/dns-zones/missing.example.com/records", map[string]any{
+		"changes": []any{
+			map[string]any{
+				"add": map[string]any{
+					"records": []any{map[string]any{"name": "web", "type": "A", "data": "1.2.3.4", "ttl": 300}},
+				},
+			},
+		},
+	})
+	require.Equal(t, 404, status)
+	require.Equal(t, "not_found", body["type"])
+	require.Equal(t, "dns_zone", body["resource"])
+	require.Equal(t, "missing.example.com", body["resource_id"])
+
+	// LIST records on a non-existent zone.
+	status, body = testutil.DoGet(t, ts, "/domain/v2beta1/dns-zones/missing.example.com/records")
+	require.Equal(t, 404, status)
+	require.Equal(t, "dns_zone", body["resource"])
+	require.Equal(t, "missing.example.com", body["resource_id"])
+
+	// DELETE a non-existent zone.
+	status = testutil.DoDelete(t, ts, "/domain/v2beta1/dns-zones/missing.example.com")
+	require.Equal(t, 404, status)
+}
