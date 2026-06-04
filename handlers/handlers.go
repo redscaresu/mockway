@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -501,9 +502,25 @@ func writeList(w http.ResponseWriter, key string, items []map[string]any) {
 }
 
 func writeDomainError(w http.ResponseWriter, err error) {
+	writeDomainErrorFor(w, err, "", "")
+}
+
+// writeDomainErrorFor enriches a not_found response with `resource` +
+// `resource_id` fields. scaleway-sdk-go's ResourceNotFoundError unmarshals
+// those into Error() formatting; without them the SDK formats as
+// "resource  with ID  is not found" (note the empty fields).
+func writeDomainErrorFor(w http.ResponseWriter, err error, resource, resourceID string) {
 	switch {
 	case errors.Is(err, models.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "resource not found", "type": "not_found"})
+		body := map[string]any{"type": "not_found"}
+		if resource != "" && resourceID != "" {
+			body["resource"] = resource
+			body["resource_id"] = resourceID
+			body["message"] = fmt.Sprintf("%s %q not found", resource, resourceID)
+		} else {
+			body["message"] = "resource not found"
+		}
+		writeJSON(w, http.StatusNotFound, body)
 	case errors.Is(err, models.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{"message": "cannot delete: dependents exist", "type": "conflict"})
 	default:
@@ -512,12 +529,24 @@ func writeDomainError(w http.ResponseWriter, err error) {
 }
 
 func writeCreateError(w http.ResponseWriter, err error) {
+	writeCreateErrorFor(w, err, "", "")
+}
+
+func writeCreateErrorFor(w http.ResponseWriter, err error, resource, resourceID string) {
 	switch {
 	case errors.Is(err, models.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]any{"message": "referenced resource not found", "type": "not_found"})
+		body := map[string]any{"type": "not_found"}
+		if resource != "" && resourceID != "" {
+			body["resource"] = resource
+			body["resource_id"] = resourceID
+			body["message"] = fmt.Sprintf("referenced %s %q not found", resource, resourceID)
+		} else {
+			body["message"] = "referenced resource not found"
+		}
+		writeJSON(w, http.StatusNotFound, body)
 	case errors.Is(err, models.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{"message": "resource already exists", "type": "conflict"})
 	default:
-		writeDomainError(w, err)
+		writeDomainErrorFor(w, err, resource, resourceID)
 	}
 }

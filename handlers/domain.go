@@ -21,9 +21,10 @@ func (app *Application) CreateDNSZone(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *Application) GetDNSZone(w http.ResponseWriter, r *http.Request) {
-	out, err := app.repo.GetDNSZone(chi.URLParam(r, "dns_zone"))
+	dnsZone := chi.URLParam(r, "dns_zone")
+	out, err := app.repo.GetDNSZone(dnsZone)
 	if err != nil {
-		writeDomainError(w, err)
+		writeDomainErrorFor(w, err, "dns_zone", dnsZone)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -69,17 +70,19 @@ func (app *Application) UpdateDNSZone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
-	out, err := app.repo.UpdateDNSZone(chi.URLParam(r, "dns_zone"), body)
+	dnsZone := chi.URLParam(r, "dns_zone")
+	out, err := app.repo.UpdateDNSZone(dnsZone, body)
 	if err != nil {
-		writeDomainError(w, err)
+		writeDomainErrorFor(w, err, "dns_zone", dnsZone)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (app *Application) DeleteDNSZone(w http.ResponseWriter, r *http.Request) {
-	if err := app.repo.DeleteDNSZone(chi.URLParam(r, "dns_zone")); err != nil {
-		writeDomainError(w, err)
+	dnsZone := chi.URLParam(r, "dns_zone")
+	if err := app.repo.DeleteDNSZone(dnsZone); err != nil {
+		writeDomainErrorFor(w, err, "dns_zone", dnsZone)
 		return
 	}
 	writeNoContent(w)
@@ -95,7 +98,7 @@ func (app *Application) PatchDomainRecords(w http.ResponseWriter, r *http.Reques
 	changes, _ := body["changes"].([]any)
 	records, err := app.repo.PatchDomainRecords(dnsZone, changes)
 	if err != nil {
-		writeDomainError(w, err)
+		writeDomainErrorFor(w, err, "dns_zone", dnsZone)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"records": records})
@@ -105,7 +108,7 @@ func (app *Application) ListDomainRecords(w http.ResponseWriter, r *http.Request
 	dnsZone := chi.URLParam(r, "dns_zone")
 	records, err := app.repo.ListDomainRecords(dnsZone)
 	if err != nil {
-		writeDomainError(w, err)
+		writeDomainErrorFor(w, err, "dns_zone", dnsZone)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
