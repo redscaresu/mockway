@@ -325,6 +325,14 @@ Gating: `MOCKWAY_ENABLE_E2E=1` + a reachable mockway at the default port (`http:
 
 **Idempotency is the hardest correctness property**: a passing `apply` does not mean the handler is correct. Run the no-op plan check. If it exits 2 (drift), the GET response shape does not round-trip through the provider. See "Common drift causes" above.
 
+## Fidelity strategy
+
+Mockway is **spec-driven**: Scaleway publishes OpenAPI YAML, downloaded copies live under `specs/`. Handlers reference the spec for request/response shapes, required fields, and error codes. The "Reverse fidelity — don't over-correct" rule (§ Common Bug Patterns #14) is enforceable because the spec is authoritative — when in doubt about whether a constraint exists, check the YAML.
+
+**Cost**: requires periodic refresh when Scaleway updates the API surface.
+
+**Comparison with sibling fakes**: fakegcp uses GCP discovery docs informally (no `specs/` tree); fakeaws declined Smithy codegen and builds reactively via `TF_LOG=DEBUG` capture (see `../fakeaws/concepts.md` § "Why no Smithy codegen"). Each fake is described in `../infrafactory/AGENTS.md` § "Sibling-fake fidelity strategies".
+
 ## API Fidelity Principles
 
 Mockway's value depends on behaving like the real Scaleway API. When mockway is more permissive than production, it hides bugs that only surface during deployment. When mockway is more restrictive, it produces false failures.
