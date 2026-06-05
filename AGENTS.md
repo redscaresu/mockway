@@ -292,6 +292,26 @@ go test -tags provider_e2e ./e2e -run TestExamplesUpdatesIdempotency -v   # upda
 - Security group rules: provider v2.70+ filters `Editable == false`; `SetSecurityGroupRules` injects `"editable": true` and UUID `"id"` on every rule
 - Update null-overwrite — provider sends `null` for optional fields and nested objects it doesn't intend to clear; naive merge overwrites stored non-null values. Use `patchMerge` (see Update Handler Pattern below).
 
+## Provider smoke harness
+
+`examples/provider_smoke_test.go` is the canonical wire-fidelity gate. Every directory under `examples/{working,misconfigured,updates}/` is auto-discovered and run through a per-tree contract. **No real Scaleway credentials needed** — the real `scaleway/scaleway` provider binary runs against this mock; if the provider's CRUD lifecycle works, the wire shape is correct by construction.
+
+| Tree | Contract |
+|---|---|
+| `examples/working/<svc>/` | `tofu apply → plan -detailed-exitcode (no diff) → destroy` |
+| `examples/misconfigured/<svc>/` | `tofu apply` MUST fail; output must contain a documented Scaleway-style error indicator (404 / 409 / conflict / not_found, or the `expected.txt` fragment if present) |
+| `examples/updates/<svc>/` | `tofu apply -var-file=v1.tfvars → plan no-op → apply -var-file=v2.tfvars → plan no-op → destroy` (idempotency under change) |
+
+Adding a directory to any of the three trees auto-registers — no per-example test wiring. Each subdirectory is its own `t.Run` sub-test.
+
+Gating: `MOCKWAY_ENABLE_E2E=1` + a reachable mockway at the default port (`http://127.0.0.1:8080`). Without the env var, the test `t.Skip`s with a clear message.
+
+`examples/known_broken.yaml` is the only-shrink allowlist: dirs listed there are *expected* to drift and don't fail the gate. If a listed dir stops drifting, the test fails ("congratulations, remove this entry") — ratchet-only-tighten.
+
+**When you add a new resource handler**: add an `examples/working/<resource>/` config that exercises CRUD. If your handler models a documented error path, add an `examples/misconfigured/<resource>/` config + `expected.txt`. If your handler has Update semantics distinct from Create, add an `examples/updates/<resource>/` v1→v2 pair.
+
+> Note: there is also a legacy `e2e/provider_smoke_test.go` (build tag `provider_e2e`) — predates the canonical `examples/` harness; left in place for back-compat but new examples land under `examples/{working,misconfigured,updates}/`.
+
 ## Safe Workflow
 
 1. Add/adjust repository logic (`repository/repository.go`)
