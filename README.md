@@ -65,7 +65,7 @@ in action is via [`infrafactory`](https://github.com/redscaresu/infrafactory)'s
 `make up`:
 
 ```bash
-cd ~/dev && for r in infrafactory fakeaws fakegcp mockway; do git clone https://github.com/redscaresu/$r.git; done
+cd ~/dev && for r in infrafactory fakeaws fakegcp fakegenesys mockway; do git clone https://github.com/redscaresu/$r.git; done
 cd infrafactory && make up
 ./bin/infrafactory run scenarios/training/web-app-paris.yaml --config infrafactory.yaml   # drives mockway end-to-end
 make down
@@ -181,7 +181,7 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 
 ## API compatibility
 
-The point of mockway is to be wire-shape compatible with the real `scaleway/scaleway` provider — every byte the provider sends or expects to receive must match what real Scaleway would do, or the provider detects "drift" and the apply loop fails. Three guardrails enforce this; they're identical across [`mockway`](https://github.com/redscaresu/mockway) (Scaleway), [`fakegcp`](https://github.com/redscaresu/fakegcp) (GCP), and [`fakeaws`](https://github.com/redscaresu/fakeaws) (AWS).
+The point of mockway is to be wire-shape compatible with the real `scaleway/scaleway` provider — every byte the provider sends or expects to receive must match what real Scaleway would do, or the provider detects "drift" and the apply loop fails. Three guardrails enforce this; they're identical across [`mockway`](https://github.com/redscaresu/mockway) (Scaleway), [`fakegcp`](https://github.com/redscaresu/fakegcp) (GCP), [`fakeaws`](https://github.com/redscaresu/fakeaws) (AWS), and [`fakegenesys`](https://github.com/redscaresu/fakegenesys) (Genesys Cloud CCaaS).
 
 ### 1. Three example trees, auto-discovered
 
