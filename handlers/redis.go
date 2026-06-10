@@ -7,6 +7,15 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// CRITICAL[redis-endpoint-port-6379]: every Redis cluster response
+// MUST include an endpoint with port=6379 by default (across the
+// Create, SetEndpoints, and UpdateCluster paths). The Scaleway
+// provider reads `endpoints[].port` into state; a missing or wrong
+// default port would cause the provider to either fail with a nil
+// deref or persist 0 in state, breaking every Redis-consuming
+// scenario on the second plan. The default is applied at the repo
+// layer; this handler is just the entry point. Locked in by
+// TestContract_redis_endpoint_port_6379.
 func (app *Application) CreateRedisCluster(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {

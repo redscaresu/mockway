@@ -2454,7 +2454,12 @@ func TestLBIPLbIDPersistedToState(t *testing.T) {
 	require.Equal(t, lbID, stateIP["lb_id"], "state lb_ips must show lb_id after LB creation")
 }
 
-func TestCreateLBWithIPIDs(t *testing.T) {
+// TestContract_lb_ip_ids_array — wire-shape regression for the
+// CRITICAL[lb-ip-ids-array] invariant in handlers/lb.go::CreateLB.
+// Reverting that contract (e.g. accepting the deprecated singular
+// `ip_id` shape and not populating `lb.ip[]` from it) breaks this
+// test immediately. Renamed in S128 from TestCreateLBWithIPIDs.
+func TestContract_lb_ip_ids_array(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
@@ -5182,7 +5187,13 @@ func TestRedisACLAndSettings(t *testing.T) {
 	require.Len(t, endpoints, 1)
 }
 
-func TestRedisEndpointDefaultPort(t *testing.T) {
+// TestContract_redis_endpoint_port_6379 — wire-shape regression for
+// the CRITICAL[redis-endpoint-port-6379] invariant in
+// handlers/redis.go::CreateRedisCluster. Exercises the default-port
+// path across Create + UpdateClusterSettings (SetEndpoints) so a
+// regression in ANY path that builds an endpoint surfaces here.
+// Renamed in S128 from TestRedisEndpointDefaultPort.
+func TestContract_redis_endpoint_port_6379(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
