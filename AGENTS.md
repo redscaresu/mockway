@@ -331,7 +331,11 @@ Mockway is **spec-driven**: Scaleway publishes OpenAPI YAML, downloaded copies l
 
 **Cost**: requires periodic refresh when Scaleway updates the API surface.
 
-**Comparison with sibling fakes**: fakegcp uses GCP discovery docs informally (no `specs/` tree); fakeaws declined Smithy codegen and builds reactively via `TF_LOG=DEBUG` capture (see `../fakeaws/concepts.md` § "Why no Smithy codegen"). Each fake is described in `../infrafactory/AGENTS.md` § "Sibling-fake fidelity strategies".
+**Comparison with sibling fakes**: fakegcp uses GCP discovery docs informally (no `specs/` tree); fakeaws declined Smithy codegen and builds reactively via `TF_LOG=DEBUG` capture (see `../fakeaws/concepts.md` § "Why no Smithy codegen"); fakegenesys mirrors mockway's spec-driven approach via a filtered `specs/genesys-openapi.json`. Each fake is described in `../infrafactory/AGENTS.md` § "Sibling-fake fidelity strategies".
+
+## Contract-coverage convention (canonical across all 4 sibling fakes)
+
+`handlers/contract_audit_test.go` enforces the `CRITICAL[<id>]:` / `MUST[<id>]:` docstring → `TestContract_<id>` test pairing across `handlers/*.go`. A wire-shape invariant the consuming Scaleway provider depends on must NOT live as a comment alone — drift becomes a failed `go test`, not a missed code review. Current contracts (as of S128 mockway sibling rollout): `lb-ip-ids-array`, `redis-endpoint-port-6379`. Adding a new contract is a 3-step pattern documented at the top of `contract_audit_test.go`; the same file ships in fakegcp, fakeaws, fakegenesys with the same regex + paired-test logic.
 
 ## API Fidelity Principles
 
