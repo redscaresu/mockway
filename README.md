@@ -179,6 +179,33 @@ Example: [`misconfigured/cross_state_orphan`](examples/misconfigured/cross_state
 
 ---
 
+## Testing examples
+
+The canonical entry point for end-to-end example coverage is `go test ./e2e/...`:
+
+```bash
+# Run every example end-to-end (apply → plan-no-op → destroy)
+MOCKWAY_ENABLE_E2E=1 go test ./e2e/...
+
+# Run one specific example, with verbose output
+MOCKWAY_ENABLE_E2E=1 go test ./e2e/... -v -run TestProviderSmokeWorking/<dir>
+
+# Filter to a single sub-tree
+MOCKWAY_ENABLE_E2E=1 go test ./e2e/... -run TestProviderSmokeMisconfigured
+```
+
+The harness builds the `mockway` binary once and spawns a fresh
+instance on a kernel-assigned port per example, so dirs can't
+cross-contaminate state. The shell scripts under `scripts/` are
+supplementary manual debugging aids — the in-test path above is
+authoritative.
+
+The same in-test pattern is canonical across all four sibling fakes
+([fakegcp](https://github.com/redscaresu/fakegcp),
+[fakeaws](https://github.com/redscaresu/fakeaws),
+[fakegenesys](https://github.com/redscaresu/fakegenesys)) — `go test`
+against the smoke harness works identically in each.
+
 ## API compatibility
 
 The point of mockway is to be wire-shape compatible with the real `scaleway/scaleway` provider — every byte the provider sends or expects to receive must match what real Scaleway would do, or the provider detects "drift" and the apply loop fails. Three guardrails enforce this; they're identical across [`mockway`](https://github.com/redscaresu/mockway) (Scaleway), [`fakegcp`](https://github.com/redscaresu/fakegcp) (GCP), [`fakeaws`](https://github.com/redscaresu/fakeaws) (AWS), and [`fakegenesys`](https://github.com/redscaresu/fakegenesys) (Genesys Cloud CCaaS).
