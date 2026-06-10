@@ -60,6 +60,14 @@ func (app *Application) DeleteLBIP(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+// CRITICAL[lb-ip-ids-array]: the Scaleway Terraform provider sends the
+// LB-IP association as an ARRAY field `ip_ids: [<id>, ...]`, NOT the
+// deprecated singular string `ip_id: <id>`. The repo's CreateLB
+// resolves that array → each IP's lb_id pointer + the LB response's
+// embedded `ip` array. If we shipped the deprecated singular shape,
+// every LB-with-static-IP apply would diff every plan ("ip_ids would
+// be removed; ip_id would be added") and the resource never settles.
+// Locked in by TestContract_lb_ip_ids_array.
 func (app *Application) CreateLB(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
