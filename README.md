@@ -120,6 +120,25 @@ terraform apply   # runs against echo; watch stdout for the paths you need
 
 Then grep the log output for the paths, implement them in mockway, and switch back to normal mode.
 
+### Driving real terraform/tofu against the mock
+
+The repo ships `make demo-*` targets that wire up the env + drive a real
+`scaleway/scaleway` provider through a full lifecycle against mockway.
+Useful for blog demos and manual exploration.
+
+```bash
+make build              # one-time
+make demo-apply         # boots mockway + init + apply + plan-no-op (lb_with_ip)
+make demo-apply EXAMPLE=load_balancer
+make demo-shell         # bash subshell with env set + cd'd to example
+make demo-help          # full target list + available examples
+make demo-down          # kill mockway + clean temp files
+```
+
+The `plan -detailed-exitcode == 0` check at the end of `demo-apply` is the
+correctness oracle — drift in any wire-shape detail (case-sensitive JSON
+keys, exact status codes, default fields) surfaces here.
+
 ## Usage with OpenTofu / Terraform
 
 Point the Scaleway provider at Mockway:
