@@ -14,6 +14,7 @@ import (
 
 	"github.com/redscaresu/mockway/handlers"
 	"github.com/redscaresu/mockway/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 func requireHandlerImplemented(t *testing.T, id, slice, pattern string) {
@@ -344,29 +345,21 @@ func assertDeleteStatus(t *testing.T, status, want int) {
 
 func assertStatusCode(t *testing.T, got, want int) {
 	t.Helper()
-	if got != want {
-		t.Fatalf("status: got %d, want %d", got, want)
-	}
+	require.Equal(t, want, got, "status")
 }
 
 func assertStatusWithMessage(t *testing.T, status int, body map[string]any, want int, message string) {
 	t.Helper()
 	assertStatusCode(t, status, want)
-	if body["message"] != message {
-		t.Fatalf("message: got %v, want %q", body["message"], message)
-	}
+	require.Equal(t, message, body["message"], "message")
 }
 
 func assertFloat(t *testing.T, got any, want float64) {
 	t.Helper()
-	if got != want {
-		t.Fatalf("float: got %v, want %v", got, want)
-	}
+	require.Equal(t, want, got, "float")
 }
 
 func assertLen(t *testing.T, got []any, want int) {
 	t.Helper()
-	if len(got) != want {
-		t.Fatalf("len: got %d, want %d", len(got), want)
-	}
+	require.Len(t, got, want, "len")
 }
