@@ -9,6 +9,8 @@
 *.dylib
 bin/
 dist/
+# Root build artifact from `go build ./` at repo root
+/mockway
 
 # Test binary, built with `go test -c`
 *.test
