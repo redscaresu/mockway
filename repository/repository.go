@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -326,6 +327,15 @@ func (r *Repository) init() error {
 		)`,
 	}
 
+	// account_projects backs scaleway_account_project. Layer 3 requires
+	// the generated HCL to declare one (ADR-0010 self-managed project
+	// lifecycle), and the same HCL is applied to mockway first -- so
+	// without this table Layer 2 501s and Layer 3 is unreachable.
+	stmts = append(stmts, `CREATE TABLE IF NOT EXISTS account_projects (
+		id TEXT PRIMARY KEY,
+		data JSON NOT NULL
+	)`)
+
 	stmts = append(stmts, `CREATE TABLE IF NOT EXISTS schema_versions (
 		version INTEGER PRIMARY KEY
 	)`)
@@ -336,7 +346,164 @@ func (r *Repository) init() error {
 		}
 	}
 
+	if err := r.seedDefaultProject(); err != nil {
+		return err
+	}
+
 	return r.migrate()
+}
+
+// seedDefaultProject makes the org's default project exist from boot.
+// Scenarios that never declare a scaleway_account_project still send
+// project_id=00000000-... on every create; without a row here they would
+// suddenly reference a project that does not exist.
+func (r *Repository) seedDefaultProject() error {
+	var count int
+	if err := r.db.QueryRow(`SELECT COUNT(1) FROM account_projects WHERE id = ?`, models.DefaultProjectID).Scan(&count); err != nil {
+		return fmt.Errorf("seed default project: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	now := nowRFC3339()
+	return r.insertJSON("account_projects", []colVal{{name: "id", val: models.DefaultProjectID}}, map[string]any{
+		"id":              models.DefaultProjectID,
+		"name":            "default",
+		"description":     "",
+		"organization_id": models.DefaultProjectID,
+		"created_at":      now,
+		"updated_at":      now,
+	})
+}
+
+func (r *Repository) CreateAccountProject(data map[string]any) (map[string]any, error) {
+	data = cloneMap(data)
+	now := nowRFC3339()
+	id := newID()
+	data["id"] = id
+	data["created_at"] = now
+	data["updated_at"] = now
+	if _, ok := data["organization_id"].(string); !ok {
+		data["organization_id"] = models.DefaultProjectID
+	}
+	if _, ok := data["description"].(string); !ok {
+		data["description"] = ""
+	}
+	if err := r.insertJSON("account_projects", []colVal{{name: "id", val: id}}, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (r *Repository) GetAccountProject(id string) (map[string]any, error) {
+	return r.getJSONByID("account_projects", "id", id)
+}
+
+func (r *Repository) ListAccountProjects() ([]map[string]any, error) {
+	return r.listJSON("account_projects", "", "")
+}
+
+func (r *Repository) UpdateAccountProject(id string, data map[string]any) (map[string]any, error) {
+	existing, err := r.getJSONByID("account_projects", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range data {
+		switch k {
+		case "id", "created_at", "organization_id":
+			// immutable
+		default:
+			existing[k] = v
+		}
+	}
+	existing["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("account_projects", "id", id, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+// DeleteAccountProject refuses to delete a project that still owns
+// resources, the way real Scaleway does.
+//
+// The scan is driven off sqlite_master rather than a hand-maintained
+// table list so a service added later is covered automatically -- a
+// missed table here would mean mockway approves a destroy that real
+// Scaleway rejects, which is exactly the class of divergence Layer 2 is
+// supposed to catch before Layer 3 spends money.
+func (r *Repository) DeleteAccountProject(id string) error {
+	if _, err := r.getJSONByID("account_projects", "id", id); err != nil {
+		return err
+	}
+	blockers, err := r.projectDependents(id)
+	if err != nil {
+		return err
+	}
+	if len(blockers) > 0 {
+		return &models.ProjectNotEmptyError{ProjectID: id, Blockers: blockers}
+	}
+	return r.deleteBy("account_projects", "id = ?", id)
+}
+
+// projectDependents returns "<table>/<id>" for every row in any
+// data-carrying table whose JSON has project_id == id.
+func (r *Repository) projectDependents(projectID string) ([]string, error) {
+	rows, err := r.db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('account_projects', 'schema_versions')`)
+	if err != nil {
+		return nil, fmt.Errorf("list tables: %w", err)
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	sort.Strings(tables)
+
+	blockers := make([]string, 0)
+	for _, table := range tables {
+		if !r.tableHasDataColumn(table) {
+			continue
+		}
+		// #nosec G202 -- table comes from sqlite_master, not user input.
+		q := "SELECT COALESCE(json_extract(data, '$.id'), '?') FROM " + table + " WHERE json_extract(data, '$.project_id') = ?"
+		depRows, err := r.db.Query(q, projectID)
+		if err != nil {
+			return nil, fmt.Errorf("scan %s for project dependents: %w", table, err)
+		}
+		for depRows.Next() {
+			var depID string
+			if err := depRows.Scan(&depID); err != nil {
+				depRows.Close()
+				return nil, err
+			}
+			blockers = append(blockers, table+"/"+depID)
+		}
+		if err := depRows.Err(); err != nil {
+			depRows.Close()
+			return nil, err
+		}
+		depRows.Close()
+	}
+	return blockers, nil
+}
+
+func (r *Repository) tableHasDataColumn(table string) bool {
+	// #nosec G202 -- table comes from sqlite_master, not user input.
+	rows, err := r.db.Query("SELECT 1 FROM pragma_table_info('" + table + "') WHERE name = 'data'")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
 }
 
 // migrate runs versioned schema migrations for tables that already exist but
@@ -4334,7 +4501,15 @@ func (r *Repository) FullState() (map[string]any, error) {
 		return nil, err
 	}
 
+	accountProjects, err := r.listJSON("account_projects", "", "")
+	if err != nil {
+		return nil, err
+	}
+
 	return map[string]any{
+		"account": map[string]any{
+			"projects": accountProjects,
+		},
 		"instance": map[string]any{
 			"servers":         servers,
 			"ips":             ips,
@@ -4634,6 +4809,14 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		return map[string]any{
 			"dns_zones": dnsZones,
 			"records":   records,
+		}, nil
+	case "account":
+		projects, err := r.listJSON("account_projects", "", "")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"projects": projects,
 		}, nil
 	default:
 		return nil, models.ErrNotFound

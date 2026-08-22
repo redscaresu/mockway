@@ -443,6 +443,14 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/dns-zones/{dns_zone}/records", app.ListDomainRecords)
 		})
 
+		r.Route("/account/v3", func(r chi.Router) {
+			r.Post("/projects", app.CreateAccountProject)
+			r.Get("/projects", app.ListAccountProjects)
+			r.Get("/projects/{project_id}", app.GetAccountProject)
+			r.Patch("/projects/{project_id}", app.UpdateAccountProject)
+			r.Delete("/projects/{project_id}", app.DeleteAccountProject)
+		})
+
 		// Legacy alias for scaleway_account_ssh_key.
 		r.Route("/account/v2alpha1", func(r chi.Router) {
 			r.Post("/ssh-keys", app.CreateIAMSSHKey)
