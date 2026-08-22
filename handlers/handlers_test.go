@@ -994,7 +994,14 @@ func TestUnknownServiceState404(t *testing.T) {
 	require.Equal(t, "not_found", body["type"])
 	require.Equal(t, "unknown service", body["message"])
 
-	status, body = testutil.DoGet(t, ts, "/mock/state/account")
+	// `account` used to be unknown; S140 landed /account/v3/projects, so
+	// it is a real service now. Kept as a positive assertion rather than
+	// deleted -- the point of the test is that the switch discriminates.
+	status, accountState := testutil.DoGet(t, ts, "/mock/state/account")
+	require.Equal(t, 200, status)
+	require.Contains(t, accountState, "projects")
+
+	status, body = testutil.DoGet(t, ts, "/mock/state/nosuchservice")
 	require.Equal(t, 404, status)
 	require.Equal(t, "not_found", body["type"])
 	require.Equal(t, "unknown service", body["message"])
@@ -2217,8 +2224,8 @@ func TestCreateLBACLIncludesFrontendObject(t *testing.T) {
 	feID := fe["id"].(string)
 
 	status, acl := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/"+feID+"/acls", map[string]any{
-		"name":  "deny-all",
-		"index": 1,
+		"name":   "deny-all",
+		"index":  1,
 		"action": map[string]any{"type": "deny"},
 		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
 	})
@@ -2236,8 +2243,8 @@ func TestCreateLBACLRejects404ForMissingFrontend(t *testing.T) {
 	defer cleanup()
 
 	status, body := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/non-existent-id/acls", map[string]any{
-		"name":  "deny-all",
-		"index": 1,
+		"name":   "deny-all",
+		"index":  1,
 		"action": map[string]any{"type": "deny"},
 		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
 	})
@@ -5257,9 +5264,9 @@ func TestLBRegionalAPI(t *testing.T) {
 
 	// Create Backend via regional route
 	status, backend := testutil.DoCreate(t, ts, "/lb/v1/regions/fr-par/backends", map[string]any{
-		"lb_id":        lbID,
-		"name":         "my-backend",
-		"forward_port": float64(8080),
+		"lb_id":            lbID,
+		"name":             "my-backend",
+		"forward_port":     float64(8080),
 		"forward_protocol": "tcp",
 	})
 	require.Equal(t, 200, status)
@@ -5268,10 +5275,10 @@ func TestLBRegionalAPI(t *testing.T) {
 
 	// Create Frontend via regional route
 	status, frontend := testutil.DoCreate(t, ts, "/lb/v1/regions/fr-par/frontends", map[string]any{
-		"lb_id":       lbID,
-		"name":        "my-frontend",
+		"lb_id":        lbID,
+		"name":         "my-frontend",
 		"inbound_port": float64(80),
-		"backend_id":  backendID,
+		"backend_id":   backendID,
 	})
 	require.Equal(t, 200, status)
 	frontendID := frontend["id"].(string)
@@ -5412,8 +5419,8 @@ func TestLBACLGetUpdateDelete(t *testing.T) {
 	frontendID := frontend["id"].(string)
 
 	_, acl := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/frontends/"+frontendID+"/acls", map[string]any{
-		"name":  "allow-internal",
-		"index": float64(1),
+		"name":   "allow-internal",
+		"index":  float64(1),
 		"action": map[string]any{"type": "allow"},
 		"match":  map[string]any{"ip_subnet": []any{"10.0.0.0/8"}},
 	})
@@ -5427,8 +5434,8 @@ func TestLBACLGetUpdateDelete(t *testing.T) {
 
 	// Update
 	status, updated := doPut(t, ts, "/lb/v1/zones/fr-par-1/acls/"+aclID, map[string]any{
-		"name":  "renamed-acl",
-		"index": float64(1),
+		"name":   "renamed-acl",
+		"index":  float64(1),
 		"action": map[string]any{"type": "deny"},
 		"match":  map[string]any{"ip_subnet": []any{"0.0.0.0/0"}},
 	})
@@ -5839,7 +5846,7 @@ func TestRedisDeleteEndpoint(t *testing.T) {
 	// Set an endpoint with an explicit id so DeleteRedisEndpoint can find it
 	status, body := doPut(t, ts, "/redis/v1/zones/fr-par-1/clusters/"+clusterID+"/endpoints", map[string]any{
 		"endpoints": []any{map[string]any{
-			"id": epID,
+			"id":              epID,
 			"private_network": map[string]any{"id": "00000000-0000-0000-0000-000000000001"},
 		}},
 	})
@@ -5933,7 +5940,7 @@ func TestRDBRestoreBackup(t *testing.T) {
 	backupID := backup["id"].(string)
 
 	status, body := testutil.DoCreate(t, ts, "/rdb/v1/regions/fr-par/backups/"+backupID+"/restore", map[string]any{
-		"instance_id": instanceID,
+		"instance_id":   instanceID,
 		"database_name": "restored",
 	})
 	require.Equal(t, 200, status)

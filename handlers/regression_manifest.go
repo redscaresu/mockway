@@ -28,6 +28,7 @@ import (
 // As of S52-T1, the twelve mockway service prefixes are all landed
 // (see README "Provider Compatibility Matrix").
 var LandedServices = []string{
+	"account",
 	"block",
 	"domain",
 	"iam",
