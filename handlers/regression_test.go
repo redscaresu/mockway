@@ -402,3 +402,29 @@ func TestContract_instance_v2_pnis_filters_by_server(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	assert.Empty(t, body["private_network_interfaces"], "a server with no private network has no interfaces")
 }
+
+// The server_id lookup is not zonal, so without an explicit zone filter
+// a NIC on a server in another zone comes back from this one's request.
+func TestContract_instance_v2_pnis_scoped_to_zone(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	pnID := createPrivateNetwork(t, ts)
+
+	status, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-2/servers",
+		map[string]any{"name": "elsewhere", "commercial_type": "DEV1-S", "image": "ubuntu_noble"})
+	require.Equal(t, http.StatusOK, status)
+	id := unwrap(server, "server")["id"].(string)
+
+	status, _ = testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-2/servers/"+id+"/private_nics",
+		map[string]any{"private_network_id": pnID})
+	require.Equal(t, http.StatusOK, status)
+
+	// Same server, asked for in the wrong zone.
+	status, body := testutil.DoList(t, ts,
+		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces?server_id="+id)
+
+	require.Equal(t, http.StatusOK, status)
+	assert.Empty(t, body["private_network_interfaces"],
+		"a fr-par-1 request must not return a fr-par-2 server's interfaces")
+}

@@ -655,13 +655,25 @@ func (app *Application) DeletePrivateNIC(w http.ResponseWriter, r *http.Request)
 //
 // CRITICAL[instance-v2-pnis-filters-by-server]: the provider passes
 // server_id, so an unfiltered listing would report another server's
-// interfaces as this one's.
+// interfaces as this one's. The listing is also confined to the zone in
+// the request path, because the server_id lookup is not itself zonal.
+//
+// CRITICAL[instance-v2-pnis-scoped-to-zone]: the server_id lookup is not
+// zonal, so an unfiltered result returns another zone's interfaces.
+//
+// An unknown server_id returns 200 with an empty list rather than 404.
+// That looks like a missing existence check and is not one -- the real
+// API was asked:
+//
+//	GET .../private-network-interfaces?server_id=00000000-0000-0000-0000-000000000000
+//	200 {"private_network_interfaces": [], "total_count": 0}
 //
 // The element shape is inferred: it carries the v1 private-NIC records,
 // which hold the same identifying fields. No real populated response has
 // been observed, so a scenario that both attaches a private network and
 // asserts on this endpoint's element fields is not yet trustworthy here.
 func (app *Application) ListPrivateNetworkInterfacesV2(w http.ResponseWriter, r *http.Request) {
+	zone := chi.URLParam(r, "zone")
 	serverID := r.URL.Query().Get("server_id")
 
 	var (
@@ -671,11 +683,25 @@ func (app *Application) ListPrivateNetworkInterfacesV2(w http.ResponseWriter, r 
 	if serverID != "" {
 		items, err = app.repo.ListPrivateNICsByServer(serverID)
 	} else {
-		items, err = app.repo.ListPrivateNICsByZone(chi.URLParam(r, "zone"))
+		items, err = app.repo.ListPrivateNICsByZone(zone)
 	}
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeList(w, "private_network_interfaces", items)
+	writeList(w, "private_network_interfaces", filterByZone(items, zone))
+}
+
+// filterByZone keeps the listing inside the zone in the request path.
+//
+// The server_id lookup is not zonal, so without this a NIC on a server
+// in fr-par-2 would come back from a fr-par-1 request.
+func filterByZone(items []map[string]any, zone string) []map[string]any {
+	kept := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if item["zone"] == zone {
+			kept = append(kept, item)
+		}
+	}
+	return kept
 }
