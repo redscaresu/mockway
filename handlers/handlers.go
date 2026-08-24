@@ -36,6 +36,10 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Get("/local-images/{local_image_id}", app.GetMarketplaceLocalImage)
 		})
 
+		r.Route("/instance/v2alpha1/zones/{zone}", func(r chi.Router) {
+			r.Get("/private-network-interfaces", app.ListPrivateNetworkInterfacesV2)
+		})
+
 		r.Route("/instance/v1/zones/{zone}", func(r chi.Router) {
 			r.Get("/products/servers", app.ListProductsServers)
 
