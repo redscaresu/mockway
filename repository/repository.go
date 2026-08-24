@@ -659,6 +659,13 @@ func (r *Repository) Reset() error {
 		"vpc_routes",
 		"private_networks",
 		"vpcs",
+		// Projects a scenario created must go too. They are not service
+		// state, so they were missed here originally -- and because
+		// nothing else ever deletes them, one Layer 3 scenario's
+		// bootstrapped project stayed in account_projects forever and
+		// counted as an orphan against every scenario that ran after
+		// it. The seeded default is restored below.
+		"account_projects",
 	}
 
 	if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
@@ -672,6 +679,12 @@ func (r *Repository) Reset() error {
 		if _, err := r.db.Exec(fmt.Sprintf("DELETE FROM %s", t)); err != nil {
 			return err
 		}
+	}
+	// account_projects was just emptied, so put the boot-time default
+	// back: scenarios that never declare a project still send
+	// project_id=00000000-... on every create.
+	if err := r.seedDefaultProject(); err != nil {
+		return err
 	}
 	return r.clearSnapshot()
 }
@@ -4911,4 +4924,10 @@ func randomAlphaNum(n int) string {
 		b.WriteByte(alphabet[v.Int64()])
 	}
 	return b.String()
+}
+
+// ListPrivateNICsByZone backs the unfiltered v2alpha1
+// private-network-interfaces listing.
+func (r *Repository) ListPrivateNICsByZone(zone string) ([]map[string]any, error) {
+	return r.listJSON("instance_private_nics", "zone", zone)
 }

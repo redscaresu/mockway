@@ -638,3 +638,44 @@ func (app *Application) DeletePrivateNIC(w http.ResponseWriter, r *http.Request)
 	}
 	writeNoContent(w)
 }
+
+// ListPrivateNetworkInterfacesV2 answers the v2alpha1 endpoint the
+// Scaleway provider polls while creating a server.
+//
+// CRITICAL[instance-v2-pnis-envelope]: the provider calls this on every
+// scaleway_instance_server create, so a 501 here fails the apply before
+// any of the server's own behaviour is exercised -- which is exactly how
+// it surfaced: infrafactory's lb-serving-paris could not clear Layer 2,
+// and Layer 2 gates Layer 3.
+//
+// The envelope was read off the real API rather than guessed:
+//
+//	GET /instance/v2alpha1/zones/fr-par-1/private-network-interfaces
+//	200 {"private_network_interfaces": [], "total_count": 0}
+//
+// CRITICAL[instance-v2-pnis-filters-by-server]: the provider passes
+// server_id, so an unfiltered listing would report another server's
+// interfaces as this one's.
+//
+// The element shape is inferred: it carries the v1 private-NIC records,
+// which hold the same identifying fields. No real populated response has
+// been observed, so a scenario that both attaches a private network and
+// asserts on this endpoint's element fields is not yet trustworthy here.
+func (app *Application) ListPrivateNetworkInterfacesV2(w http.ResponseWriter, r *http.Request) {
+	serverID := r.URL.Query().Get("server_id")
+
+	var (
+		items []map[string]any
+		err   error
+	)
+	if serverID != "" {
+		items, err = app.repo.ListPrivateNICsByServer(serverID)
+	} else {
+		items, err = app.repo.ListPrivateNICsByZone(chi.URLParam(r, "zone"))
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeList(w, "private_network_interfaces", items)
+}

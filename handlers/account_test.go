@@ -148,3 +148,37 @@ func doDeleteJSON(t *testing.T, ts *httptest.Server, path string) (int, map[stri
 	}
 	return resp.StatusCode, out
 }
+
+// Reset must clear projects a scenario created and put the seeded
+// default back.
+//
+// account_projects was originally absent from Repository.Reset's table
+// list -- it holds account state rather than service state, so it was
+// easy to miss. Nothing else ever deletes those rows, so a Layer 3
+// scenario that bootstraps its own project left it behind permanently,
+// and infrafactory's post-destroy `no_orphans` gate counted it as an
+// orphan against every scenario that ran afterwards.
+func TestMockResetClearsScenarioProjectsAndReseedsDefault(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, project := testutil.DoCreate(t, ts, "/account/v3/projects", map[string]any{"name": "scenario-owned"})
+	require.Equal(t, http.StatusOK, status)
+	require.NotEqual(t, models.DefaultProjectID, project["id"])
+
+	resp, err := http.Post(ts.URL+"/mock/reset", "application/json", nil)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	status, list := testutil.DoList(t, ts, "/account/v3/projects")
+	require.Equal(t, http.StatusOK, status)
+
+	projects, ok := list["projects"].([]any)
+	require.True(t, ok)
+	require.Len(t, projects, 1, "only the seeded default may survive a reset")
+
+	def := projects[0].(map[string]any)
+	assert.Equal(t, models.DefaultProjectID, def["id"])
+	assert.Equal(t, "default", def["name"])
+}

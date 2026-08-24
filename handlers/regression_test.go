@@ -14,6 +14,7 @@ import (
 
 	"github.com/redscaresu/mockway/handlers"
 	"github.com/redscaresu/mockway/testutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -362,4 +363,42 @@ func assertFloat(t *testing.T, got any, want float64) {
 func assertLen(t *testing.T, got []any, want int) {
 	t.Helper()
 	require.Len(t, got, want, "len")
+}
+
+// TestContract_instance_v2_pnis_envelope pins the envelope the Scaleway
+// provider expects from the v2alpha1 private-network-interfaces
+// endpoint, read off the real API:
+//
+//	200 {"private_network_interfaces": [], "total_count": 0}
+//
+// CRITICAL[instance-v2-pnis-envelope]. Before this route existed the
+// mock answered 501 and every scaleway_instance_server apply failed.
+func TestContract_instance_v2_pnis_envelope(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, body := testutil.DoList(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces")
+
+	require.Equal(t, http.StatusOK, status)
+	items, ok := body["private_network_interfaces"]
+	require.True(t, ok, "the provider reads private_network_interfaces; any other key is a 501 in disguise")
+	assert.Empty(t, items)
+	assert.Equal(t, float64(0), body["total_count"])
+}
+
+// A server create must not 501 on the interface poll.
+func TestContract_instance_v2_pnis_filters_by_server(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers",
+		map[string]any{"name": "web", "commercial_type": "DEV1-S", "image": "ubuntu_noble"})
+	require.Equal(t, http.StatusOK, status)
+	id := unwrap(server, "server")["id"].(string)
+
+	status, body := testutil.DoList(t, ts,
+		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces?server_id="+id)
+
+	require.Equal(t, http.StatusOK, status)
+	assert.Empty(t, body["private_network_interfaces"], "a server with no private network has no interfaces")
 }
