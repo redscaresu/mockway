@@ -37,7 +37,11 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 		})
 
 		r.Route("/instance/v2alpha1/zones/{zone}", func(r chi.Router) {
+			r.Post("/private-network-interfaces", app.CreatePrivateNetworkInterfaceV2)
 			r.Get("/private-network-interfaces", app.ListPrivateNetworkInterfacesV2)
+			r.Get("/private-network-interfaces/{pni_id}", app.GetPrivateNetworkInterfaceV2)
+			r.Patch("/private-network-interfaces/{pni_id}", app.UpdatePrivateNetworkInterfaceV2)
+			r.Delete("/private-network-interfaces/{pni_id}", app.DeletePrivateNetworkInterfaceV2)
 		})
 
 		r.Route("/instance/v1/zones/{zone}", func(r chi.Router) {

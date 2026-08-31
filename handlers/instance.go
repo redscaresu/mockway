@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -704,4 +705,179 @@ func filterByZone(items []map[string]any, zone string) []map[string]any {
 		}
 	}
 	return kept
+}
+
+// CreatePrivateNetworkInterfaceV2 attaches a server to a private network.
+//
+// CRITICAL[instance-v2-pni-create]: the Scaleway provider creates
+// `scaleway_instance_private_nic` through this endpoint, not through the
+// v1 `/servers/{id}/private_nics` route. Returning 501 here fails the
+// apply, which stops Layer 2, which stops Layer 3 -- infrafactory runs
+// Layer 3 only when the mock apply succeeded. So a missing verb on this
+// one path blocked every Scaleway compute scenario from ever reaching
+// real cloud through `test`.
+//
+// Unlike v1, the server is named in the BODY rather than the path: this
+// route is zone-scoped only. Taking it from the body is therefore not a
+// shortcut, it is the shape of the endpoint.
+//
+// CRITICAL[instance-v2-pni-unwrapped]: the response is the object
+// ITSELF, with no envelope -- v1 wraps in `private_nic` and the v2
+// listing wraps in `private_network_interfaces`, so a singular
+// `private_network_interface` envelope is the natural guess and it is
+// wrong. Read off the SDK rather than guessed:
+//
+//	var resp PrivateNetworkInterface
+//	err = s.client.Do(scwReq, &resp, opts...)
+//
+// An envelope here parses as an empty object, so the provider's next call
+// fails with "field PrivateNetworkInterfaceID cannot be empty in
+// request" -- a message that points at the request and not at this
+// response, which is what makes the mistake expensive to find.
+//
+// Backed by the same repository records as the v1 route, so a NIC created
+// here is visible to `GET /servers/{id}/private_nics` and vice versa. Two
+// stores would let a server report different interfaces depending on
+// which API version asked. The record therefore carries BOTH spellings of
+// the same field -- v1's `state` and v2's `status`.
+//
+// One observed divergence from real Scaleway, recorded rather than
+// reconciled: on 2026-08-31 a real NIC came back with `private_ips: null`
+// immediately after create, while mockway synthesises one. That is a
+// single sample taken seconds after create, before IPAM would have had
+// time to attach anything, so it is not enough to call the real steady
+// state -- and guessing from it would trade a known small divergence for
+// an unknown one.
+func (app *Application) CreatePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+
+	serverID, _ := body["server_id"].(string)
+	if serverID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": "server_id is required", "type": "invalid_argument",
+		})
+		return
+	}
+	// Checked rather than assumed: creating an interface on a server that
+	// does not exist would leave a record nothing can reach, and the v1
+	// listing route makes the same check.
+	//
+	// Reported as a CREATE error, not a domain one. On this path the
+	// server is a resource being REFERENCED, so the body says
+	// `referenced server "<id>" not found` -- and the private-network
+	// foreign key inside CreatePrivateNIC below already answers that way.
+	// Two spellings for the same missing server, depending on which check
+	// happened to catch it first, is the kind of inconsistency a client
+	// cannot code against.
+	server, err := app.repo.GetServer(serverID)
+	if err != nil {
+		writeCreateErrorFor(w, err, "server", serverID)
+		return
+	}
+
+	// CRITICAL[instance-v2-pni-zone-scoped]: this route is zone-scoped
+	// but the server_id lookup is not, so nothing else stops an interface
+	// being created in one zone against a server in another. The stored
+	// record would then claim a zone its server is not in, and
+	// ListPrivateNetworkInterfacesV2 -- which filters by zone precisely
+	// because of this -- would hide it from both.
+	zone := chi.URLParam(r, "zone")
+	if serverZone, _ := server["zone"].(string); serverZone != "" && serverZone != zone {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"message":     fmt.Sprintf("referenced server %q not found in zone %s", serverID, zone),
+			"type":        "not_found",
+			"resource":    "server",
+			"resource_id": serverID,
+		})
+		return
+	}
+
+	out, err := app.repo.CreatePrivateNIC(zone, serverID, body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GetPrivateNetworkInterfaceV2 reads one interface by its own id.
+//
+// No server_id in the path to cross-check against, unlike the v1 route --
+// the id is the whole address here.
+func (app *Application) GetPrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	out, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// UpdatePrivateNetworkInterfaceV2 changes an interface's tags in place.
+//
+// The provider updates tags in place rather than replacing the interface
+// -- confirmed by planning a tag change against the mock, which reported
+// "will be updated in-place" and then failed the apply with a 501. So a
+// missing PATCH is not a gap in coverage, it is a broken apply.
+func (app *Application) UpdatePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	if _, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	out, err := app.repo.UpdatePrivateNIC(chi.URLParam(r, "pni_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// privateNetworkInterfaceInZone reads an interface and refuses one that
+// lives in another zone.
+//
+// CRITICAL[instance-v2-pni-zone-scoped]: every v2alpha1 interface route
+// is zone-scoped, so an id lookup that ignores the zone lets a client
+// with the wrong zone read, update or DELETE an interface belonging to
+// another one -- and against a mock that wrong client passes, which is
+// the whole failure mode a fidelity mock exists to prevent. The listing
+// route already filters for exactly this reason.
+func (app *Application) privateNetworkInterfaceInZone(zone, id string) (map[string]any, error) {
+	out, err := app.repo.GetPrivateNIC(id)
+	if err != nil {
+		return nil, err
+	}
+	if nicZone, _ := out["zone"].(string); nicZone != zone {
+		return nil, models.ErrNotFound
+	}
+	return out, nil
+}
+
+// DeletePrivateNetworkInterfaceV2 detaches the server from the network.
+//
+// The provider destroys through this route, so without it a scenario
+// could be applied and never torn down -- which against a mock means the
+// next run inherits it, and is exactly the class of leak the orphan
+// sweep exists to catch.
+func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	// Zone-checked BEFORE deleting: a wrong-zone request must not be able
+	// to remove another zone's interface, which is the one mistake here
+	// that cannot be undone by retrying.
+	if _, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeNoContent(w)
 }
