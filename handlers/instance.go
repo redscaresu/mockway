@@ -764,8 +764,16 @@ func (app *Application) CreatePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 	// Checked rather than assumed: creating an interface on a server that
 	// does not exist would leave a record nothing can reach, and the v1
 	// listing route makes the same check.
+	//
+	// Reported as a CREATE error, not a domain one. On this path the
+	// server is a resource being REFERENCED, so the body says
+	// `referenced server "<id>" not found` -- and the private-network
+	// foreign key inside CreatePrivateNIC below already answers that way.
+	// Two spellings for the same missing server, depending on which check
+	// happened to catch it first, is the kind of inconsistency a client
+	// cannot code against.
 	if _, err := app.repo.GetServer(serverID); err != nil {
-		writeDomainError(w, err)
+		writeCreateErrorFor(w, err, "server", serverID)
 		return
 	}
 

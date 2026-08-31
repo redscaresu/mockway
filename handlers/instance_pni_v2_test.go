@@ -158,13 +158,19 @@ func TestCreatePrivateNetworkInterfaceV2RefusesAnUnknownServer(t *testing.T) {
 	defer cleanup()
 	pnID := createPrivateNetworkForNIC(t, ts)
 
-	status, _ := testutil.DoCreate(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces",
+	status, body := testutil.DoCreate(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces",
 		map[string]any{
 			"private_network_id": pnID,
 			"server_id":          "00000000-0000-0000-0000-000000000000",
 		})
 
-	assert.Equal(t, http.StatusNotFound, status)
+	require.Equal(t, http.StatusNotFound, status)
+	// A create-path error: the server is being REFERENCED here, and the
+	// private-network foreign key answers the same way. Two spellings for
+	// the same missing server would be uncodeable against.
+	assert.Equal(t, "server", body["resource"])
+	assert.Equal(t, "00000000-0000-0000-0000-000000000000", body["resource_id"])
+	assert.Contains(t, body["message"], "referenced server")
 }
 
 func TestCreatePrivateNetworkInterfaceV2RequiresAServerID(t *testing.T) {
