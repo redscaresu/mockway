@@ -11,36 +11,36 @@ import (
 func (app *Application) ListK8sVersions(w http.ResponseWriter, r *http.Request) {
 	versions := []map[string]any{
 		{
-			"name":                    "1.31.2",
-			"label":                   "Kubernetes 1.31.2",
-			"available_cnis":          []any{"cilium", "calico", "kilo", "flannel"},
+			"name":                         "1.31.2",
+			"label":                        "Kubernetes 1.31.2",
+			"available_cnis":               []any{"cilium", "calico", "kilo", "flannel"},
 			"available_container_runtimes": []any{"containerd"},
-			"available_feature_gates": []any{},
-			"available_kubelet_args":  map[string]any{},
+			"available_feature_gates":      []any{},
+			"available_kubelet_args":       map[string]any{},
 		},
 		{
-			"name":                    "1.30.6",
-			"label":                   "Kubernetes 1.30.6",
-			"available_cnis":          []any{"cilium", "calico", "kilo", "flannel"},
+			"name":                         "1.30.6",
+			"label":                        "Kubernetes 1.30.6",
+			"available_cnis":               []any{"cilium", "calico", "kilo", "flannel"},
 			"available_container_runtimes": []any{"containerd"},
-			"available_feature_gates": []any{},
-			"available_kubelet_args":  map[string]any{},
+			"available_feature_gates":      []any{},
+			"available_kubelet_args":       map[string]any{},
 		},
 		{
-			"name":                    "1.29.10",
-			"label":                   "Kubernetes 1.29.10",
-			"available_cnis":          []any{"cilium", "calico", "kilo", "flannel"},
+			"name":                         "1.29.10",
+			"label":                        "Kubernetes 1.29.10",
+			"available_cnis":               []any{"cilium", "calico", "kilo", "flannel"},
 			"available_container_runtimes": []any{"containerd"},
-			"available_feature_gates": []any{},
-			"available_kubelet_args":  map[string]any{},
+			"available_feature_gates":      []any{},
+			"available_kubelet_args":       map[string]any{},
 		},
 		{
-			"name":                    "1.28.15",
-			"label":                   "Kubernetes 1.28.15",
-			"available_cnis":          []any{"cilium", "calico", "kilo", "flannel"},
+			"name":                         "1.28.15",
+			"label":                        "Kubernetes 1.28.15",
+			"available_cnis":               []any{"cilium", "calico", "kilo", "flannel"},
 			"available_container_runtimes": []any{"containerd"},
-			"available_feature_gates": []any{},
-			"available_kubelet_args":  map[string]any{},
+			"available_feature_gates":      []any{},
+			"available_kubelet_args":       map[string]any{},
 		},
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"versions": versions})
@@ -147,9 +147,9 @@ func (app *Application) GetClusterKubeconfig(w http.ResponseWriter, r *http.Requ
 	}
 	// Return a minimal mock kubeconfig the provider can parse.
 	kubeconfig := map[string]any{
-		"name":            "kubeconfig",
-		"content_type":    "application/octet-stream",
-		"content":         "YXBpVmVyc2lvbjogdjEKY2x1c3RlcnM6Ci0gY2x1c3RlcjoKICAgIHNlcnZlcjogaHR0cHM6Ly9tb2NrLWs4cy1hcGlzZXJ2ZXIuc2N3LmNsb3VkOjY0NDMKICBuYW1lOiBtb2NrCmNvbnRleHRzOgotIGNvbnRleHQ6CiAgICBjbHVzdGVyOiBtb2NrCiAgICB1c2VyOiBtb2NrCiAgbmFtZTogbW9jawpjdXJyZW50LWNvbnRleHQ6IG1vY2sKa2luZDogQ29uZmlnCnVzZXJzOgotIG5hbWU6IG1vY2sKICB1c2VyOgogICAgdG9rZW46IG1vY2stdG9rZW4K",
+		"name":         "kubeconfig",
+		"content_type": "application/octet-stream",
+		"content":      "YXBpVmVyc2lvbjogdjEKY2x1c3RlcnM6Ci0gY2x1c3RlcjoKICAgIHNlcnZlcjogaHR0cHM6Ly9tb2NrLWs4cy1hcGlzZXJ2ZXIuc2N3LmNsb3VkOjY0NDMKICBuYW1lOiBtb2NrCmNvbnRleHRzOgotIGNvbnRleHQ6CiAgICBjbHVzdGVyOiBtb2NrCiAgICB1c2VyOiBtb2NrCiAgbmFtZTogbW9jawpjdXJyZW50LWNvbnRleHQ6IG1vY2sKa2luZDogQ29uZmlnCnVzZXJzOgotIG5hbWU6IG1vY2sKICB1c2VyOgogICAgdG9rZW46IG1vY2stdG9rZW4K",
 	}
 	writeJSON(w, http.StatusOK, kubeconfig)
 }

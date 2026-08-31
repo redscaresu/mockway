@@ -24,11 +24,11 @@ import (
 // (handlers/regression_manifest.go::LandedServices) and the
 // handlers/ directory; asserts:
 //
-//   (a) every id in LandedServices is satisfied by ≥1 handlers/<id>*.go
-//       file (so "lb" is satisfied collectively by lb.go + lb_acl.go); and
-//   (b) every service prefix in handlers/ has a manifest entry — the
-//       audit groups files by their before-first-`_`-or-`.go` prefix
-//       and asserts every prefix appears in LandedServices.
+//	(a) every id in LandedServices is satisfied by ≥1 handlers/<id>*.go
+//	    file (so "lb" is satisfied collectively by lb.go + lb_acl.go); and
+//	(b) every service prefix in handlers/ has a manifest entry — the
+//	    audit groups files by their before-first-`_`-or-`.go` prefix
+//	    and asserts every prefix appears in LandedServices.
 //
 // Files that are not service handlers (handlers.go itself, admin.go,
 // unimplemented.go, regression_manifest.go, *_test.go) are excluded

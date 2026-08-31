@@ -705,3 +705,101 @@ func filterByZone(items []map[string]any, zone string) []map[string]any {
 	}
 	return kept
 }
+
+// CreatePrivateNetworkInterfaceV2 attaches a server to a private network.
+//
+// CRITICAL[instance-v2-pni-create]: the Scaleway provider creates
+// `scaleway_instance_private_nic` through this endpoint, not through the
+// v1 `/servers/{id}/private_nics` route. Returning 501 here fails the
+// apply, which stops Layer 2, which stops Layer 3 -- infrafactory runs
+// Layer 3 only when the mock apply succeeded. So a missing verb on this
+// one path blocked every Scaleway compute scenario from ever reaching
+// real cloud through `test`.
+//
+// Unlike v1, the server is named in the BODY rather than the path: this
+// route is zone-scoped only. Taking it from the body is therefore not a
+// shortcut, it is the shape of the endpoint.
+//
+// CRITICAL[instance-v2-pni-unwrapped]: the response is the object
+// ITSELF, with no envelope -- v1 wraps in `private_nic` and the v2
+// listing wraps in `private_network_interfaces`, so a singular
+// `private_network_interface` envelope is the natural guess and it is
+// wrong. Read off the SDK rather than guessed:
+//
+//	var resp PrivateNetworkInterface
+//	err = s.client.Do(scwReq, &resp, opts...)
+//
+// An envelope here parses as an empty object, so the provider's next call
+// fails with "field PrivateNetworkInterfaceID cannot be empty in
+// request" -- a message that points at the request and not at this
+// response, which is what makes the mistake expensive to find.
+//
+// Backed by the same repository records as the v1 route, so a NIC created
+// here is visible to `GET /servers/{id}/private_nics` and vice versa. Two
+// stores would let a server report different interfaces depending on
+// which API version asked. The record therefore carries BOTH spellings of
+// the same field -- v1's `state` and v2's `status`.
+//
+// One observed divergence from real Scaleway, recorded rather than
+// reconciled: on 2026-08-31 a real NIC came back with `private_ips: null`
+// immediately after create, while mockway synthesises one. That is a
+// single sample taken seconds after create, before IPAM would have had
+// time to attach anything, so it is not enough to call the real steady
+// state -- and guessing from it would trade a known small divergence for
+// an unknown one.
+func (app *Application) CreatePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+
+	serverID, _ := body["server_id"].(string)
+	if serverID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": "server_id is required", "type": "invalid_argument",
+		})
+		return
+	}
+	// Checked rather than assumed: creating an interface on a server that
+	// does not exist would leave a record nothing can reach, and the v1
+	// listing route makes the same check.
+	if _, err := app.repo.GetServer(serverID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	out, err := app.repo.CreatePrivateNIC(chi.URLParam(r, "zone"), serverID, body)
+	if err != nil {
+		writeCreateError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GetPrivateNetworkInterfaceV2 reads one interface by its own id.
+//
+// No server_id in the path to cross-check against, unlike the v1 route --
+// the id is the whole address here.
+func (app *Application) GetPrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	out, err := app.repo.GetPrivateNIC(chi.URLParam(r, "pni_id"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// DeletePrivateNetworkInterfaceV2 detaches the server from the network.
+//
+// The provider destroys through this route, so without it a scenario
+// could be applied and never torn down -- which against a mock means the
+// next run inherits it, and is exactly the class of leak the orphan
+// sweep exists to catch.
+func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeNoContent(w)
+}

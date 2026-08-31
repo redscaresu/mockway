@@ -1676,9 +1676,23 @@ func (r *Repository) DeleteIP(id string) error { return r.deleteBy("instance_ips
 
 func (r *Repository) CreatePrivateNIC(zone, serverID string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
+	now := nowRFC3339()
 	data["server_id"] = serverID
 	data["zone"] = zone
+	// Both spellings, because one record serves two API versions: v1's
+	// PrivateNIC carries `state`, v2alpha1's PrivateNetworkInterface
+	// carries `status`. Same values, same meaning. Writing only one would
+	// make an interface look healthy through one version and unknown
+	// through the other, and the provider creates through v2 while
+	// infrafactory's own checks read v1.
 	data["state"] = "available"
+	data["status"] = "available"
+	// The v2 waiter polls until status leaves {attaching, detaching,
+	// syncing}, so "available" is what makes an apply finish rather than
+	// spin until the provider's timeout.
+	data["mac_address"] = fakeMACAddress()
+	data["created_at"] = now
+	data["updated_at"] = now
 	data["private_ips"] = []any{map[string]any{
 		"id":      newID(),
 		"address": fakePrivateIP(),
@@ -4850,6 +4864,15 @@ func regionFromZone(zone string) string {
 func fakePublicIP() string {
 	p := strings.ReplaceAll(newID(), "-", "")
 	return fmt.Sprintf("51.15.%d.%d", int(p[0])%254+1, int(p[1])%254+1)
+}
+
+// fakeMACAddress returns a locally-administered unicast MAC, which is
+// what Scaleway hands out for a private NIC (the real one observed on
+// 2026-08-31 was 02:00:00:14:f9:63). Both API versions return this field
+// and mockway returned neither before S170.
+func fakeMACAddress() string {
+	p := strings.ReplaceAll(newID(), "-", "")
+	return fmt.Sprintf("02:00:00:%02x:%02x:%02x", int(p[0])%256, int(p[1])%256, int(p[2])%256)
 }
 
 func fakePrivateIP() string {
