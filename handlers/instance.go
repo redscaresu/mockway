@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -772,12 +773,30 @@ func (app *Application) CreatePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 	// Two spellings for the same missing server, depending on which check
 	// happened to catch it first, is the kind of inconsistency a client
 	// cannot code against.
-	if _, err := app.repo.GetServer(serverID); err != nil {
+	server, err := app.repo.GetServer(serverID)
+	if err != nil {
 		writeCreateErrorFor(w, err, "server", serverID)
 		return
 	}
 
-	out, err := app.repo.CreatePrivateNIC(chi.URLParam(r, "zone"), serverID, body)
+	// CRITICAL[instance-v2-pni-zone-scoped]: this route is zone-scoped
+	// but the server_id lookup is not, so nothing else stops an interface
+	// being created in one zone against a server in another. The stored
+	// record would then claim a zone its server is not in, and
+	// ListPrivateNetworkInterfacesV2 -- which filters by zone precisely
+	// because of this -- would hide it from both.
+	zone := chi.URLParam(r, "zone")
+	if serverZone, _ := server["zone"].(string); serverZone != "" && serverZone != zone {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"message":     fmt.Sprintf("referenced server %q not found in zone %s", serverID, zone),
+			"type":        "not_found",
+			"resource":    "server",
+			"resource_id": serverID,
+		})
+		return
+	}
+
+	out, err := app.repo.CreatePrivateNIC(zone, serverID, body)
 	if err != nil {
 		writeCreateError(w, err)
 		return
@@ -790,12 +809,56 @@ func (app *Application) CreatePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 // No server_id in the path to cross-check against, unlike the v1 route --
 // the id is the whole address here.
 func (app *Application) GetPrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
-	out, err := app.repo.GetPrivateNIC(chi.URLParam(r, "pni_id"))
+	out, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id"))
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// UpdatePrivateNetworkInterfaceV2 changes an interface's tags in place.
+//
+// The provider updates tags in place rather than replacing the interface
+// -- confirmed by planning a tag change against the mock, which reported
+// "will be updated in-place" and then failed the apply with a 501. So a
+// missing PATCH is not a gap in coverage, it is a broken apply.
+func (app *Application) UpdatePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	if _, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	out, err := app.repo.UpdatePrivateNIC(chi.URLParam(r, "pni_id"), body)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// privateNetworkInterfaceInZone reads an interface and refuses one that
+// lives in another zone.
+//
+// CRITICAL[instance-v2-pni-zone-scoped]: every v2alpha1 interface route
+// is zone-scoped, so an id lookup that ignores the zone lets a client
+// with the wrong zone read, update or DELETE an interface belonging to
+// another one -- and against a mock that wrong client passes, which is
+// the whole failure mode a fidelity mock exists to prevent. The listing
+// route already filters for exactly this reason.
+func (app *Application) privateNetworkInterfaceInZone(zone, id string) (map[string]any, error) {
+	out, err := app.repo.GetPrivateNIC(id)
+	if err != nil {
+		return nil, err
+	}
+	if nicZone, _ := out["zone"].(string); nicZone != zone {
+		return nil, models.ErrNotFound
+	}
+	return out, nil
 }
 
 // DeletePrivateNetworkInterfaceV2 detaches the server from the network.
@@ -805,6 +868,13 @@ func (app *Application) GetPrivateNetworkInterfaceV2(w http.ResponseWriter, r *h
 // next run inherits it, and is exactly the class of leak the orphan
 // sweep exists to catch.
 func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	// Zone-checked BEFORE deleting: a wrong-zone request must not be able
+	// to remove another zone's interface, which is the one mistake here
+	// that cannot be undone by retrying.
+	if _, err := app.privateNetworkInterfaceInZone(chi.URLParam(r, "zone"), chi.URLParam(r, "pni_id")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "pni_id")); err != nil {
 		writeDomainError(w, err)
 		return

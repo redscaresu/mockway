@@ -40,6 +40,7 @@ func (app *Application) RegisterRoutes(r chi.Router) {
 			r.Post("/private-network-interfaces", app.CreatePrivateNetworkInterfaceV2)
 			r.Get("/private-network-interfaces", app.ListPrivateNetworkInterfacesV2)
 			r.Get("/private-network-interfaces/{pni_id}", app.GetPrivateNetworkInterfaceV2)
+			r.Patch("/private-network-interfaces/{pni_id}", app.UpdatePrivateNetworkInterfaceV2)
 			r.Delete("/private-network-interfaces/{pni_id}", app.DeletePrivateNetworkInterfaceV2)
 		})
 

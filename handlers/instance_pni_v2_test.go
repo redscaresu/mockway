@@ -206,3 +206,80 @@ func TestDeletePrivateNetworkInterfaceV2RemovesIt(t *testing.T) {
 		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id)
 	assert.Equal(t, http.StatusNotFound, status, "a destroyed interface must not come back")
 }
+
+// TestContract_instance_v2_pni_zone_scoped — wire-shape regression for
+// the CRITICAL[instance-v2-pni-zone-scoped] invariant.
+//
+// Every v2alpha1 interface route is zone-scoped, but the underlying id
+// and server_id lookups are not. Without an explicit check a client with
+// the wrong zone can read, update or DELETE another zone's interface —
+// and against a mock that wrong client PASSES, which is the failure mode
+// a fidelity mock exists to prevent. The listing route already filters
+// for exactly this reason.
+func TestContract_instance_v2_pni_zone_scoped(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+	serverID := createServerForNIC(t, ts)
+	pnID := createPrivateNetworkForNIC(t, ts)
+
+	// Create in fr-par-1 against a server that lives there.
+	status, nic := testutil.DoCreate(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces",
+		map[string]any{"private_network_id": pnID, "server_id": serverID})
+	require.Equal(t, http.StatusOK, status)
+	id := nic["id"].(string)
+
+	otherZone := "/instance/v2alpha1/zones/fr-par-2/private-network-interfaces/" + id
+
+	t.Run("get", func(t *testing.T) {
+		got, _ := testutil.DoGet(t, ts, otherZone)
+		assert.Equal(t, http.StatusNotFound, got)
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		assert.Equal(t, http.StatusNotFound, testutil.DoDelete(t, ts, otherZone),
+			"a wrong-zone delete is the one mistake here that retrying cannot undo")
+
+		// And it is still there.
+		got, _ := testutil.DoGet(t, ts,
+			"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id)
+		assert.Equal(t, http.StatusOK, got)
+	})
+
+	t.Run("create against a server in another zone", func(t *testing.T) {
+		status, body := testutil.DoCreate(t,
+			ts, "/instance/v2alpha1/zones/fr-par-2/private-network-interfaces",
+			map[string]any{"private_network_id": pnID, "server_id": serverID})
+
+		require.Equal(t, http.StatusNotFound, status)
+		assert.Contains(t, body["message"], "fr-par-2",
+			"the message must name the zone, or the mismatch is invisible")
+	})
+}
+
+// The provider updates tags in place rather than replacing the
+// interface, confirmed by planning a tag change against the mock: "will
+// be updated in-place", then a 501 on apply. A missing PATCH is a broken
+// apply, not a gap in coverage.
+func TestUpdatePrivateNetworkInterfaceV2ChangesTagsInPlace(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+	serverID := createServerForNIC(t, ts)
+	pnID := createPrivateNetworkForNIC(t, ts)
+
+	_, nic := testutil.DoCreate(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces",
+		map[string]any{"private_network_id": pnID, "server_id": serverID, "tags": []any{"v1"}})
+	id := nic["id"].(string)
+
+	status, updated := testutil.DoPatch(t, ts,
+		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id,
+		map[string]any{"tags": []any{"v2"}})
+
+	require.Equal(t, http.StatusOK, status, "a 501 here fails the apply: %#v", updated)
+	assert.Equal(t, []any{"v2"}, updated["tags"])
+	assert.Equal(t, id, updated["id"], "the response is the object itself, unwrapped")
+
+	// It persists rather than only being echoed back.
+	_, fetched := testutil.DoGet(t, ts,
+		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id)
+	assert.Equal(t, []any{"v2"}, fetched["tags"])
+}

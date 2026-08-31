@@ -1707,6 +1707,25 @@ func (r *Repository) CreatePrivateNIC(zone, serverID string, data map[string]any
 		colVal{name: "private_network_id", val: pnID},
 	)
 }
+
+// UpdatePrivateNIC applies a PATCH to an existing interface.
+//
+// The v2alpha1 provider updates tags in place rather than replacing the
+// interface, so without this a tag change fails the apply with a 501 --
+// verified by driving the real provider on 2026-08-31.
+func (r *Repository) UpdatePrivateNIC(id string, patch map[string]any) (map[string]any, error) {
+	current, err := r.getJSONByID("instance_private_nics", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	next := patchMerge(current, patch, "id")
+	next["updated_at"] = nowRFC3339()
+	if err := r.updateJSONByID("instance_private_nics", "id", id, next); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (r *Repository) GetPrivateNIC(id string) (map[string]any, error) {
 	return r.getJSONByID("instance_private_nics", "id", id)
 }
