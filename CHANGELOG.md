@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-09-09)
+- **A private network with no `vpc_id` now lands in the default VPC**, matching Scaleway. Real
+  Scaleway gives every project a default VPC per region and places the network there when the
+  request names none; mockway required one, so the empty string reached the foreign-key check as a
+  missing reference and the mock **rejected configuration Scaleway accepts** — a private network
+  with just a name being the common shape. The provider surfaced it as `resource  with ID  is not
+  found`, whose two empty gaps are what a FK failure on `""` looks like by the time it reaches HCL.
+  Found by an infrafactory run whose generated HCL was *byte-identical* to a stack that had deployed
+  to real Scaleway the day before: it failed twice and the loop declared itself stuck. The generator
+  was right and the mock was wrong — the inversion of the usual case. The default VPC is created on
+  demand and reused per region rather than seeded, so no test has to know about it; an explicit
+  `vpc_id` still wins and is still foreign-key checked.
+
 ### Added (M73 + M75 + M77 + M82 + M85, 2026-05-28)
 - **M75 — Regression patterns catalogue** at `handlers/regression_test.go` (13 `TestRegression*` functions). mockway had `regression_audit_test.go` + `regression_manifest.go` scaffolding for ~6 months but ZERO patterns — audit passed vacuously. Patterns ported from fakeaws's S43-T10 catalogue and adapted to Scaleway's surface: cross-state-orphan rejection (iam api-keys), VPC→private-network FK, LB→ACL→frontend chain, K8s node-pool→cluster, RDB read-replica→primary, registry-namespace uniqueness, nested-private-NIC ownership check, marketplace unknown-label behavior, etc.
 - **M85 — `TestRegressionSeedAuditHasPatterns`** added — meta-guard asserts pattern count ≥ `min(len(LandedServices), 8)`. Prevents the M75-class "audit scaffolding ships with zero patterns" recurrence.
