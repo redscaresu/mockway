@@ -1004,9 +1004,73 @@ func (r *Repository) CreatePrivateNetwork(region string, data map[string]any) (m
 		"created_at": now,
 		"updated_at": now,
 	}}
+	// An omitted vpc_id lands in the project's DEFAULT VPC, like Scaleway.
+	//
+	// Real Scaleway gives every project a default VPC per region and puts a
+	// private network there when the request names no `vpc_id`. mockway
+	// required one, so it rejected configuration Scaleway accepts:
+	//
+	//	resource "scaleway_vpc_private_network" "main" {
+	//	  name = "..."          # no vpc_id -- valid, and the common shape
+	//	}
+	//
+	// The empty string went to the foreign-key check as a missing
+	// reference, and the provider surfaced it as
+	// `resource  with ID  is not found` -- note the two empty gaps, which
+	// is what a FK failure on "" looks like by the time it reaches HCL.
+	//
+	// Found 2026-09-09: an infrafactory run of `web-live-paris` generated
+	// HCL byte-identical to a stack that had deployed to real Scaleway the
+	// day before, failed twice with that error, and the loop correctly
+	// declared itself stuck. The generator was right and the mock was
+	// wrong -- the inversion of the usual case, where the real provider
+	// catches the mock.
 	vpcID, _ := data["vpc_id"].(string)
+	if strings.TrimSpace(vpcID) == "" {
+		id, err := r.defaultVPCID(region, data["project_id"])
+		if err != nil {
+			return nil, err
+		}
+		vpcID = id
+		data["vpc_id"] = vpcID
+	}
 	return r.createSimple("private_networks", "region", region, data, colVal{name: "vpc_id", val: vpcID})
 }
+
+// defaultVPCID returns the region's default VPC, creating it on first use.
+//
+// Scaleway provisions one per project per region up front; mockway makes it
+// on demand instead, which is indistinguishable from the caller's side and
+// avoids seeding state every test has to know about.
+func (r *Repository) defaultVPCID(region string, projectID any) (string, error) {
+	existing, err := r.ListVPCs(region)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range existing {
+		if name, _ := v["name"].(string); name == defaultVPCName {
+			if id, _ := v["id"].(string); id != "" {
+				return id, nil
+			}
+		}
+	}
+
+	created, err := r.CreateVPC(region, map[string]any{
+		"name":       defaultVPCName,
+		"project_id": projectID,
+		"tags":       []any{},
+	})
+	if err != nil {
+		return "", err
+	}
+	id, _ := created["id"].(string)
+	return id, nil
+}
+
+// defaultVPCName is how the auto-created VPC is recognised on the next call.
+// Scaleway names it "default"; matching that keeps state readable and makes
+// the mock's behaviour explainable from the real API's documentation.
+const defaultVPCName = "default"
 
 func (r *Repository) GetPrivateNetwork(id string) (map[string]any, error) {
 	return r.getJSONByID("private_networks", "id", id)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/redscaresu/mockway/models"
 	"github.com/redscaresu/mockway/repository"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -661,4 +662,82 @@ func TestPatchMergeSkipsTopLevelNull(t *testing.T) {
 	au, ok := updated["auto_upgrade"].(map[string]any)
 	require.True(t, ok, "auto_upgrade should survive a null patch")
 	require.Equal(t, true, au["enabled"], "auto_upgrade.enabled should survive")
+}
+
+// A private network with no vpc_id lands in the default VPC, like Scaleway.
+//
+// mockway used to require one: the empty string reached the foreign-key
+// check as a missing reference, and the provider surfaced it as
+// `resource  with ID  is not found`. That rejected configuration real
+// Scaleway accepts, and it is the common shape -- a private network with
+// just a name.
+//
+// Found 2026-09-09 by an infrafactory run whose generated HCL was
+// byte-identical to a stack that had deployed to real Scaleway the day
+// before. The generator was right; the mock was stricter than reality.
+func TestCreatePrivateNetworkDefaultsTheVPC(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	pn, err := repo.CreatePrivateNetwork("fr-par", map[string]any{
+		"name":       "app-pn",
+		"project_id": "00000000-0000-0000-0000-000000000000",
+	})
+	require.NoError(t, err, "a private network with no vpc_id is valid on Scaleway")
+
+	vpcID, _ := pn["vpc_id"].(string)
+	assert.NotEmpty(t, vpcID, "it must be placed in a VPC, not left dangling")
+
+	vpc, err := repo.GetVPC(vpcID)
+	require.NoError(t, err, "and that VPC must really exist -- this is the FK that failed")
+	assert.Equal(t, "default", vpc["name"])
+}
+
+// The default VPC is created once and reused, not once per network.
+func TestDefaultVPCIsSharedAcrossPrivateNetworks(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	mk := func(name string) string {
+		pn, err := repo.CreatePrivateNetwork("fr-par", map[string]any{
+			"name": name, "project_id": "00000000-0000-0000-0000-000000000000",
+		})
+		require.NoError(t, err)
+		id, _ := pn["vpc_id"].(string)
+		return id
+	}
+
+	assert.Equal(t, mk("pn-a"), mk("pn-b"), "one default VPC per region, reused")
+
+	vpcs, err := repo.ListVPCs("fr-par")
+	require.NoError(t, err)
+	assert.Len(t, vpcs, 1, "and no VPC sprawl")
+}
+
+// An explicit vpc_id is still honoured, and still foreign-key checked.
+func TestExplicitVPCIDIsUnchanged(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	vpc, err := repo.CreateVPC("fr-par", map[string]any{
+		"name": "mine", "project_id": "00000000-0000-0000-0000-000000000000",
+	})
+	require.NoError(t, err)
+	mineID, _ := vpc["id"].(string)
+
+	pn, err := repo.CreatePrivateNetwork("fr-par", map[string]any{
+		"name": "app-pn", "project_id": "00000000-0000-0000-0000-000000000000",
+		"vpc_id": mineID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, mineID, pn["vpc_id"], "an explicit VPC wins over the default")
+
+	_, err = repo.CreatePrivateNetwork("fr-par", map[string]any{
+		"name": "bad-pn", "project_id": "00000000-0000-0000-0000-000000000000",
+		"vpc_id": "11111111-1111-1111-1111-111111111111",
+	})
+	assert.Error(t, err, "a vpc_id that does not exist must still be refused")
 }
