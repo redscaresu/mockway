@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-09-10)
+- **Deleting a private network interface now requires its server to be powered off**, as real
+  Scaleway does (`412`, `Can't delete a private network interface attached to a server`). Both
+  delete routes enforce it — v1 `/servers/{id}/private_nics/{nic}` and v2alpha1
+  `/private-network-interfaces/{id}` — because a precondition honoured on one route and not the
+  other is a mock that disagrees with itself depending on which API the provider calls.
+
+  This is the expensive kind of infidelity: **the mock was more permissive than reality**, so it
+  did not merely miss a bug, it *certified a wrong fix*. `tofu destroy` removes a NIC before its
+  server (reverse dependency order), so a running instance makes the whole teardown fail. On
+  2026-09-09 a fix for exactly that failure was verified here, mockway answered `7 added, 7
+  destroyed`, and it shipped on that evidence — real Scaleway then refused the destroy exactly as
+  before, twice, each time leaving billable infrastructure that needed a human with cloud
+  credentials to unpick.
+
+  Pinned by `TestContract_nic_delete_requires_stopped_server`, which asserts **both** directions:
+  refused while running, and accepted once stopped. A test with only the first half would pass
+  against a mock that refuses unconditionally — which would break every teardown instead of fixing
+  one.
+
 ### Fixed (2026-09-09)
 - **A private network with no `vpc_id` now lands in the default VPC**, matching Scaleway. Real
   Scaleway gives every project a default VPC per region and places the network there when the

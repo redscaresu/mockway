@@ -634,6 +634,9 @@ func (app *Application) DeletePrivateNIC(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if err := app.repo.DeletePrivateNIC(nicID); err != nil {
+		if writeServerRunningError(w, err) {
+			return
+		}
 		writeDomainError(w, err)
 		return
 	}
@@ -876,8 +879,35 @@ func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 		return
 	}
 	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "pni_id")); err != nil {
+		if writeServerRunningError(w, err) {
+			return
+		}
 		writeDomainError(w, err)
 		return
 	}
 	writeNoContent(w)
+}
+
+// writeServerRunningError answers the running-server precondition, and
+// reports whether it did.
+//
+// CRITICAL[nic-delete-requires-stopped-server]: real Scaleway answers 412
+// with this exact prose, and the provider surfaces it verbatim into the
+// destroy output. Both NIC delete routes -- v1
+// /servers/{id}/private_nics/{nic} and v2alpha1
+// /private-network-interfaces/{id} -- go through here, because a
+// precondition enforced on one route and not the other is a mock that
+// disagrees with itself depending on which API the provider happens to
+// call.
+func writeServerRunningError(w http.ResponseWriter, err error) bool {
+	var running *models.ServerRunningError
+	if !errors.As(err, &running) {
+		return false
+	}
+	writeJSON(w, http.StatusPreconditionFailed, map[string]any{
+		"message":  running.Error(),
+		"type":     "precondition_failed",
+		"resource": "private_nic",
+	})
+	return true
 }

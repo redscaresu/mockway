@@ -39,3 +39,34 @@ func (e *ProjectNotEmptyError) Error() string {
 // Is reports ErrConflict so existing writeDomainError call sites degrade
 // to a 409 rather than a 500 if they do not know about this type.
 func (e *ProjectNotEmptyError) Is(target error) bool { return target == ErrConflict }
+
+// ServerRunningError reports an operation real Scaleway refuses while the
+// server is powered on.
+//
+// Today that is exactly one operation: deleting a private network
+// interface. The API answers
+//
+//	precondition failed: Can't delete a private network interface attached to a server
+//
+// and it means "attached to a RUNNING server" -- the same delete succeeds
+// once the server is stopped.
+//
+// Modelled because mockway did NOT enforce it, and the gap was not
+// harmless. On 2026-09-09 a fix for that exact teardown failure was
+// verified against mockway, reported "7 added, 7 destroyed", and was
+// wrong: real Scaleway refused the destroy just as before. A mock more
+// permissive than reality does not merely miss bugs -- it CERTIFIES wrong
+// fixes, which is worse, because the green run is taken as evidence.
+type ServerRunningError struct {
+	ServerID string
+	State    string
+}
+
+func (e *ServerRunningError) Error() string {
+	return fmt.Sprintf("Can't delete a private network interface attached to a server (server %s is %s)",
+		e.ServerID, e.State)
+}
+
+// Is reports ErrConflict so call sites that do not know about this type
+// degrade to a 409 rather than a 500.
+func (e *ServerRunningError) Is(target error) bool { return target == ErrConflict }
