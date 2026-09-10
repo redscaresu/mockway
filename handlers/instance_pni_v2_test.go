@@ -183,10 +183,24 @@ func TestCreatePrivateNetworkInterfaceV2RequiresAServerID(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, status)
 }
 
-// The provider destroys through this route. Without it a scenario could
-// be applied and never torn down, and against a mock the next run
-// inherits it.
-func TestDeletePrivateNetworkInterfaceV2RemovesIt(t *testing.T) {
+// INVERTED 2026-09-10. This test used to assert 204, on the reasoning
+// that "the provider destroys through this route, so it must work".
+// Real Scaleway refuses it, every time:
+//
+//	DELETE /instance/v2alpha1/.../private-network-interfaces/{id}
+//	412 "Can't delete a private network interface attached to a server"
+//
+// A private NIC is by definition attached to a server, so the
+// precondition can never be satisfied and provider 2.81.0 can never
+// destroy one. The v1 route has no such check -- 204 on the same NIC,
+// on a RUNNING server, seconds later.
+//
+// The assumption in the old comment is what made this mock permissive,
+// and a permissive mock does not merely miss a bug: a teardown fix was
+// verified here on 2026-09-09, reported "7 added, 7 destroyed", and was
+// WRONG. Two days went into a power-state theory that two curl calls
+// settled. See TestContract_nic_delete_v2alpha1_always_refuses.
+func TestDeletePrivateNetworkInterfaceV2AlwaysRefuses(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 	serverID := createServerForNIC(t, ts)
@@ -199,12 +213,12 @@ func TestDeletePrivateNetworkInterfaceV2RemovesIt(t *testing.T) {
 		})
 	id := nic["id"].(string)
 
-	assert.Equal(t, http.StatusNoContent, testutil.DoDelete(t, ts,
+	assert.Equal(t, http.StatusPreconditionFailed, testutil.DoDelete(t, ts,
 		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id))
 
 	status, _ := testutil.DoGet(t, ts,
 		"/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+id)
-	assert.Equal(t, http.StatusNotFound, status, "a destroyed interface must not come back")
+	assert.Equal(t, http.StatusOK, status, "a refused delete must leave the interface in place")
 }
 
 // TestContract_instance_v2_pni_zone_scoped — wire-shape regression for
