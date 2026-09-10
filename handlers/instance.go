@@ -634,9 +634,6 @@ func (app *Application) DeletePrivateNIC(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	if err := app.repo.DeletePrivateNIC(nicID); err != nil {
-		if writeServerRunningError(w, err) {
-			return
-		}
 		writeDomainError(w, err)
 		return
 	}
@@ -878,36 +875,28 @@ func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 		writeDomainError(w, err)
 		return
 	}
-	if err := app.repo.DeletePrivateNIC(chi.URLParam(r, "pni_id")); err != nil {
-		if writeServerRunningError(w, err) {
-			return
-		}
-		writeDomainError(w, err)
-		return
-	}
-	writeNoContent(w)
-}
-
-// writeServerRunningError answers the running-server precondition, and
-// reports whether it did.
-//
-// CRITICAL[nic-delete-requires-stopped-server]: real Scaleway answers 412
-// with this exact prose, and the provider surfaces it verbatim into the
-// destroy output. Both NIC delete routes -- v1
-// /servers/{id}/private_nics/{nic} and v2alpha1
-// /private-network-interfaces/{id} -- go through here, because a
-// precondition enforced on one route and not the other is a mock that
-// disagrees with itself depending on which API the provider happens to
-// call.
-func writeServerRunningError(w http.ResponseWriter, err error) bool {
-	var running *models.ServerRunningError
-	if !errors.As(err, &running) {
-		return false
-	}
+	// CRITICAL[nic-delete-v2alpha1-always-refuses]: this route ALWAYS
+	// refuses, with 412 and this exact prose. Real Scaleway, 2026-09-10:
+	//
+	//	DELETE /instance/v2alpha1/zones/fr-par-1/private-network-interfaces/{id}
+	//	412 {"precondition":"resource_not_usable",
+	//	     "help_message":"Can't delete a private network interface attached to a server"}
+	//
+	// A private NIC is by definition attached to a server, so the
+	// precondition can never be satisfied here. Power state is NOT the
+	// variable -- the same NIC on the same server deleted through v1
+	// seconds later with 204, and again later on a RUNNING server.
+	//
+	// This matters more than a usual fidelity gap because provider
+	// 2.81.0 destroys NICs through THIS route, so it can never tear one
+	// down. infrafactory works around it by deleting through v1 first
+	// (ADR-0031); a mock that let v2alpha1 succeed would make that
+	// workaround look unnecessary, which is how the defect survived two
+	// days of investigation.
 	writeJSON(w, http.StatusPreconditionFailed, map[string]any{
-		"message":  running.Error(),
-		"type":     "precondition_failed",
-		"resource": "private_nic",
+		"message":      "precondition is not respected",
+		"help_message": "Can't delete a private network interface attached to a server",
+		"precondition": "resource_not_usable",
+		"type":         "precondition_failed",
 	})
-	return true
 }

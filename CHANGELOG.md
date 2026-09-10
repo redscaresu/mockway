@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed (2026-09-10)
-- **Deleting a private network interface now requires its server to be powered off**, as real
+### Fixed (2026-09-10, revised same day)
+- **`DELETE /instance/v2alpha1/.../private-network-interfaces/{id}` now always answers 412**, as
+  real Scaleway does — `Can't delete a private network interface attached to a server`. A NIC is by
+  definition attached to a server, so the precondition can never be satisfied, and **provider 2.81.0
+  destroys NICs through this route**, so it can never tear one down. The v1 route
+  (`/servers/{id}/private_nics/{nic}`) has no such check and answers 204, on a running server.
+
+  Both measured against the real API on the same NIC, seconds apart. Pinned by
+  `TestContract_nic_delete_v2alpha1_always_refuses`, which asserts **both** halves — v2alpha1
+  refusing alone would also pass against a mock that refuses everywhere, which is what an earlier
+  version of this change did for a few hours, and it broke every mock teardown.
+
+  `TestDeletePrivateNetworkInterfaceV2RemovesIt` asserted 204 here, on the reasoning that *the
+  provider uses this route, so it must work*. That assumption is what made the mock permissive, and
+  a permissive mock does not merely miss bugs — a teardown fix was verified against it on
+  2026-09-09, reported `7 added, 7 destroyed`, and was wrong. The test is inverted and renamed.
+
+### Superseded (2026-09-10)
+- An earlier form of this entry claimed the precondition was **power state** — that a NIC is
+  deletable only once its server is stopped. That was wrong. It came from a manual recovery that
+  stopped the server *and* used `scw`, which calls v1; the stop did nothing and the endpoint was the
+  whole difference. Two days and two refuted ADRs went into the power-state theory before two curl
+  calls settled it.
+- Older note, still accurate: **a private network with no `vpc_id` lands in the default VPC**, as real
   Scaleway does (`412`, `Can't delete a private network interface attached to a server`). Both
   delete routes enforce it — v1 `/servers/{id}/private_nics/{nic}` and v2alpha1
   `/private-network-interfaces/{id}` — because a precondition honoured on one route and not the

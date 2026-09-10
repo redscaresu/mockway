@@ -1796,46 +1796,14 @@ func (r *Repository) GetPrivateNIC(id string) (map[string]any, error) {
 func (r *Repository) ListPrivateNICsByServer(serverID string) ([]map[string]any, error) {
 	return r.listJSON("instance_private_nics", "server_id", serverID)
 }
-// serverPoweredOffStates are the states from which real Scaleway allows a
-// private NIC to be deleted. Two kinds of off: `stopped` releases the
-// resources, `stopped_in_place` keeps them allocated. Both are powered
-// off, which is what the precondition asks about.
-var serverPoweredOffStates = map[string]bool{
-	"stopped":          true,
-	"stopped_in_place": true,
-	"stopped in place": true,
-}
 
-// DeletePrivateNIC refuses while the NIC's server is running, as real
-// Scaleway does.
+// DeletePrivateNIC removes the interface. No precondition: the Instance
+// v1 route this serves has none, measured against real Scaleway on
+// 2026-09-10 by deleting a NIC on a RUNNING server and getting 204.
 //
-// CRITICAL[nic-delete-requires-stopped-server]: a private NIC is
-// deletable only while its server is powered off. `tofu destroy` removes
-// the NIC BEFORE the server -- reverse dependency order -- so a running
-// instance makes the whole teardown fail, and that is the single most
-// expensive behaviour this mock can get wrong: it is the difference
-// between a stack that tears itself down and one that needs a human with
-// cloud credentials.
-//
-// Enforced in the repository rather than the handler so every caller is
-// covered by one check.
+// The refusal lives on the v2alpha1 handler instead -- see
+// CRITICAL[nic-delete-v2alpha1-always-refuses].
 func (r *Repository) DeletePrivateNIC(id string) error {
-	nic, err := r.GetPrivateNIC(id)
-	if err != nil {
-		return err
-	}
-	if serverID, _ := nic["server_id"].(string); serverID != "" {
-		server, err := r.GetServer(serverID)
-		// A missing server means nothing is attached any more, so there
-		// is nothing to refuse. Lenient on that path deliberately: the
-		// precondition protects a running server, not a dangling row.
-		if err == nil {
-			state, _ := server["state"].(string)
-			if !serverPoweredOffStates[state] {
-				return &models.ServerRunningError{ServerID: serverID, State: state}
-			}
-		}
-	}
 	return r.deleteBy("instance_private_nics", "id = ?", id)
 }
 

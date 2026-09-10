@@ -10,9 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// deleteRaw is local because testutil.DoDelete returns only the status,
-// and the MESSAGE is half of what this contract pins -- the provider
-// surfaces it verbatim into the destroy output an operator then reads.
 func deleteRaw(t *testing.T, base, path string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodDelete, base+path, nil)
@@ -26,20 +23,25 @@ func deleteRaw(t *testing.T, base, path string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// TestContract_nic_delete_requires_stopped_server pins the precondition
-// real Scaleway enforces and mockway did not.
+// TestContract_nic_delete_v2alpha1_always_refuses pins the defect that
+// makes provider 2.81.0 unable to destroy a private NIC at all.
 //
-// The gap was not harmless. On 2026-09-09 a fix for this exact teardown
-// failure was verified against mockway, which answered "7 added, 7
-// destroyed", and shipped on that evidence. Real Scaleway refused the
-// destroy exactly as before. A mock more permissive than reality does
-// not merely miss bugs -- it CERTIFIES wrong fixes, because a green run
-// reads as proof.
+// Measured against real Scaleway on 2026-09-10, same NIC, same server,
+// seconds apart:
 //
-// `tofu destroy` deletes the NIC before the server (reverse dependency
-// order), so this one behaviour decides whether a compute stack tears
-// itself down or needs a human with cloud credentials.
-func TestContract_nic_delete_requires_stopped_server(t *testing.T) {
+//	DELETE /instance/v2alpha1/.../private-network-interfaces/{id}  -> 412
+//	DELETE /instance/v1/zones/{z}/servers/{s}/private_nics/{id}    -> 204
+//
+// Power state is NOT the variable. It was assumed to be for two days --
+// because the manual recovery stopped the server first and then used
+// `scw`, which calls v1 -- and that assumption produced two refuted
+// ADRs and a teardown fix that did nothing. The endpoint was the whole
+// difference.
+//
+// Both halves are asserted. v2alpha1 refusing alone would also pass
+// against a mock that refuses everywhere, which is what mockway did for
+// a few hours today and it broke every Layer 2 teardown.
+func TestContract_nic_delete_v2alpha1_always_refuses(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
 
@@ -47,44 +49,35 @@ func TestContract_nic_delete_requires_stopped_server(t *testing.T) {
 		map[string]any{"name": "pn-contract"})
 	require.Equal(t, http.StatusOK, status)
 	pnID, _ := pn["id"].(string)
-	require.NotEmpty(t, pnID)
 
 	status, server := testutil.DoCreate(t, ts, "/instance/v1/zones/fr-par-1/servers",
 		map[string]any{"name": "srv-contract", "commercial_type": "DEV1-S", "image": "ubuntu_jammy"})
 	require.Equal(t, http.StatusOK, status, "server create: %#v", server)
 	srv, _ := server["server"].(map[string]any)
-	require.NotNil(t, srv, "server create must answer {\"server\": {...}}: %#v", server)
+	require.NotNil(t, srv)
 	serverID, _ := srv["id"].(string)
-	require.NotEmpty(t, serverID)
 
-	status, nic := testutil.DoCreate(t, ts,
-		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics",
-		map[string]any{"private_network_id": pnID})
-	require.Contains(t, []int{http.StatusOK, http.StatusCreated}, status, "nic create: %#v", nic)
-	inner, _ := nic["private_nic"].(map[string]any)
-	require.NotNil(t, inner, "nic create must answer {\"private_nic\": {...}}: %#v", nic)
-	nicID, _ := inner["id"].(string)
-	require.NotEmpty(t, nicID)
+	newNIC := func() string {
+		st, nic := testutil.DoCreate(t, ts,
+			"/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics",
+			map[string]any{"private_network_id": pnID})
+		require.Contains(t, []int{http.StatusOK, http.StatusCreated}, st, "nic create: %#v", nic)
+		inner, _ := nic["private_nic"].(map[string]any)
+		require.NotNil(t, inner)
+		id, _ := inner["id"].(string)
+		require.NotEmpty(t, id)
+		return id
+	}
 
-	// Power the server on: this is the state a destroy actually meets.
-	status, _ = testutil.DoCreate(t, ts,
-		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/action",
-		map[string]any{"action": "poweron"})
-	require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, status)
-
-	nicPath := "/instance/v1/zones/fr-par-1/servers/" + serverID + "/private_nics/" + nicID
-	code, body := deleteRaw(t, ts.URL, nicPath)
+	// v2alpha1: refused, and refused with the prose the provider prints.
+	nicID := newNIC()
+	code, body := deleteRaw(t, ts.URL, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+nicID)
 	require.Equal(t, http.StatusPreconditionFailed, code, "body: %s", body)
 	assert.Contains(t, body, "Can't delete a private network interface attached to a server")
 
-	// Stopped: the same delete succeeds. Without this half the test would
-	// also pass against a mock that refuses unconditionally, which would
-	// break every teardown instead of fixing one.
-	status, _ = testutil.DoCreate(t, ts,
-		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/action",
-		map[string]any{"action": "poweroff"})
-	require.Contains(t, []int{http.StatusOK, http.StatusCreated, http.StatusAccepted}, status)
-
-	code, body = deleteRaw(t, ts.URL, nicPath)
+	// v1, same NIC, server still RUNNING: allowed. Without this half the
+	// mock would refuse everywhere and no teardown could ever succeed.
+	code, body = deleteRaw(t, ts.URL,
+		"/instance/v1/zones/fr-par-1/servers/"+serverID+"/private_nics/"+nicID)
 	require.Equal(t, http.StatusNoContent, code, "body: %s", body)
 }
