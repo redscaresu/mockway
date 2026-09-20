@@ -129,6 +129,24 @@ func (r *Repository) init() error {
 			zone TEXT NOT NULL,
 			data JSON NOT NULL
 		)`,
+		// See CRITICAL[instance-user-data-round-trips]. user_data is WRITTEN
+		// by PATCH .../user_data/{key} and READ BACK by GET on the same
+		// path. Discarding it made the provider read an empty map, so
+		// `tofu plan` proposed re-adding cloud-init on every run and
+		// the stack never converged -- and a scenario whose whole point
+		// is "the instance serves a page" was validated against a mock
+		// that threw the startup script away.
+		//
+		// Its own table rather than a field on the server: the Server
+		// object in the spec does not carry user_data, so storing it
+		// there would leak an invented field into every server
+		// response.
+		`CREATE TABLE IF NOT EXISTS instance_server_user_data (
+			server_id TEXT NOT NULL REFERENCES instance_servers(id) ON DELETE CASCADE,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			PRIMARY KEY (server_id, key)
+		)`,
 		`CREATE TABLE IF NOT EXISTS lb_ips (
 			id TEXT PRIMARY KEY,
 			zone TEXT NOT NULL,
@@ -627,6 +645,12 @@ func (r *Repository) Reset() error {
 		"block_volumes",
 		"ipam_ips",
 		"instance_private_nics",
+		// Listed here or `POST /mock/reset` leaves it behind: the
+		// server rows go with FK checks disabled, so the cascade does
+		// not fire and one scenario's cloud-init survives into the
+		// next. Reset promises every row, and a table that quietly
+		// opts out of that is how a mock becomes nondeterministic.
+		"instance_server_user_data",
 		"instance_ips",
 		"instance_servers",
 		"instance_security_groups",
@@ -1451,8 +1475,17 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 			"size":        20000000000,
 			"volume_type": "l_ssd",
 			"state":       "available",
-			"boot":        true,
-			"zone":        zone,
+			// See CRITICAL[instance-root-volume-boot-default-false] on
+			// handlers.Application.CreateServer. In short: the
+			// volume `boot` flag defaults to FALSE
+			// (scaleway.instance.v1 spec: "Force the Instance to boot on
+			// this volume", default: false). Returning true made the
+			// provider read back a value its schema defaults to false,
+			// so `tofu plan` proposed `boot = true -> false` on every
+			// run and the stack never converged. Found by the Layer 2
+			// converge check on its first real run.
+			"boot": false,
+			"zone": zone,
 		},
 	}
 	sgID, _ := data["security_group_id"].(string)
@@ -2061,6 +2094,26 @@ func (r *Repository) CreateBackend(data map[string]any) (map[string]any, error) 
 			data["lb"] = lb
 		}
 	}
+	// See CRITICAL[lb-backend-pool-mirrors-server-ip] on
+	// handlers.Application.CreateBackend. In short: a Backend is WRITTEN
+	// with `server_ip` and READ BACK as `pool`. The spec is explicit --
+	// CreateBackend/UpdateBackend take `server_ip`, and the Backend
+	// object returns `pool`: "List of IP addresses of backend servers
+	// attached to this backend."
+	//
+	// Echoing the request field back is not the same as answering. The
+	// provider maps the response's `pool` onto `server_ips`, so a mock
+	// that returns only `server_ip` leaves that empty and every plan
+	// proposes re-adding the backend servers. Exactly the shape of
+	// CRITICAL[lb-ip-ids-array], one field over.
+	if _, ok := data["pool"]; !ok {
+		if ips, ok := data["server_ip"].([]any); ok {
+			pool := make([]any, 0, len(ips))
+			pool = append(pool, ips...)
+			data["pool"] = pool
+		}
+	}
+
 	// Provide defaults for fields the provider reads via d.Set.
 	if _, ok := data["timeout_server"]; !ok {
 		data["timeout_server"] = "5m"
@@ -2105,6 +2158,15 @@ func (r *Repository) UpdateBackend(id string, patch map[string]any) (map[string]
 	}
 	next := patchMerge(current, patch, "id")
 	next["updated_at"] = nowRFC3339()
+	// Same rule as create: an update that changes the attached servers
+	// must move `pool` with it, or the next read reports the old set
+	// and the change never sticks. See
+	// CRITICAL[lb-backend-pool-mirrors-server-ip].
+	if ips, ok := next["server_ip"].([]any); ok {
+		pool := make([]any, 0, len(ips))
+		pool = append(pool, ips...)
+		next["pool"] = pool
+	}
 	lbID, _ := next["lb_id"].(string)
 	b, err := marshalData(next)
 	if err != nil {
@@ -5043,4 +5105,72 @@ func randomAlphaNum(n int) string {
 // private-network-interfaces listing.
 func (r *Repository) ListPrivateNICsByZone(zone string) ([]map[string]any, error) {
 	return r.listJSON("instance_private_nics", "zone", zone)
+}
+
+// SetServerUserData stores one user_data key for a server.
+//
+// See CRITICAL[instance-user-data-round-trips] on
+// handlers.Application.SetServerUserData: what goes in must come back
+// out. The table definition records what discarding it cost.
+func (r *Repository) SetServerUserData(serverID, key, value string) error {
+	if _, err := r.GetServer(serverID); err != nil {
+		return err
+	}
+	_, err := r.db.Exec(
+		`INSERT INTO instance_server_user_data (server_id, key, value) VALUES (?, ?, ?)
+		 ON CONFLICT(server_id, key) DO UPDATE SET value = excluded.value`,
+		serverID, key, value)
+	return err
+}
+
+// GetServerUserData returns one key's value.
+func (r *Repository) GetServerUserData(serverID, key string) (string, error) {
+	if _, err := r.GetServer(serverID); err != nil {
+		return "", err
+	}
+	var value string
+	err := r.db.QueryRow(
+		`SELECT value FROM instance_server_user_data WHERE server_id = ? AND key = ?`,
+		serverID, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", models.ErrNotFound
+	}
+	return value, err
+}
+
+// ListServerUserDataKeys returns the keys a server has, sorted so the
+// response is stable across calls.
+func (r *Repository) ListServerUserDataKeys(serverID string) ([]string, error) {
+	if _, err := r.GetServer(serverID); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.Query(
+		`SELECT key FROM instance_server_user_data WHERE server_id = ? ORDER BY key`, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// DeleteServerUserData removes one key, which is what the provider does
+// when cloud-init is dropped from the config.
+//
+// Idempotent: a key that is not there is already in the desired state.
+// deleteBy is deliberately NOT used -- it maps zero affected rows to
+// ErrNotFound, which would 404 a retried teardown whose first attempt
+// had already succeeded.
+func (r *Repository) DeleteServerUserData(serverID, key string) error {
+	_, err := r.db.Exec(
+		`DELETE FROM instance_server_user_data WHERE server_id = ? AND key = ?`, serverID, key)
+	return err
 }

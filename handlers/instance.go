@@ -3,7 +3,9 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -122,6 +124,15 @@ func (app *Application) ListProductsServers(w http.ResponseWriter, _ *http.Reque
 	})
 }
 
+// CRITICAL[instance-root-volume-boot-default-false]: the root volume's
+// `boot` flag is FALSE by default (scaleway.instance.v1: "Force the
+// Instance to boot on this volume", default: false).
+//
+// Returning true made the provider read back a value its own schema
+// defaults to false, so `tofu plan` proposed `boot = true -> false` on
+// every run and no stack with an instance ever converged. The apply
+// succeeded every time, which is why nothing caught it until a second
+// plan was run. Implemented in repository.CreateServer.
 func (app *Application) CreateServer(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
@@ -260,23 +271,33 @@ func (app *Application) UpdateServer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"server": out})
 }
 
+// CRITICAL[instance-user-data-round-trips]: the keys written by PATCH
+// must be the keys listed here. Returning an empty list made the
+// provider see no cloud-init on read, propose adding it again, and
+// never converge.
 func (app *Application) ListServerUserData(w http.ResponseWriter, r *http.Request) {
-	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
+	keys, err := app.repo.ListServerUserDataKeys(chi.URLParam(r, "server_id"))
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user_data": []string{}})
+	writeJSON(w, http.StatusOK, map[string]any{"user_data": keys})
 }
 
-// GetServerUserDataKey handles GET /servers/{server_id}/user_data/{key}.
-// We discard user_data on write so return an empty value stub.
+// GetServerUserDataKey handles GET /servers/{server_id}/user_data/{key}
+// and returns the value as text/plain, which is how the real API serves
+// it -- the body IS the value, not a JSON envelope.
+//
+// CRITICAL[instance-user-data-round-trips].
 func (app *Application) GetServerUserDataKey(w http.ResponseWriter, r *http.Request) {
-	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
+	value, err := app.repo.GetServerUserData(chi.URLParam(r, "server_id"), chi.URLParam(r, "key"))
+	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(value))
 }
 
 func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
@@ -330,12 +351,39 @@ func (app *Application) ServerAction(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SetServerUserData stores the value so the matching GET can return it.
+//
+// The body is the raw value, not JSON: the provider PATCHes cloud-init
+// as text/plain. CRITICAL[instance-user-data-round-trips].
 func (app *Application) SetServerUserData(w http.ResponseWriter, r *http.Request) {
-	if _, err := app.repo.GetServer(chi.URLParam(r, "server_id")); err != nil {
+	defer r.Body.Close()
+	value, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "unreadable body", "type": "invalid_argument"})
+		return
+	}
+	if err := app.repo.SetServerUserData(
+		chi.URLParam(r, "server_id"), chi.URLParam(r, "key"), string(value)); err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	defer r.Body.Close()
+	writeNoContent(w)
+}
+
+// DeleteServerUserDataKey handles DELETE on a user_data key, which the
+// provider calls when cloud-init is removed from the configuration. A
+// key that is not there is already in the desired state, so this is
+// idempotent rather than a 404.
+func (app *Application) DeleteServerUserDataKey(w http.ResponseWriter, r *http.Request) {
+	serverID := chi.URLParam(r, "server_id")
+	if _, err := app.repo.GetServer(serverID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if err := app.repo.DeleteServerUserData(serverID, chi.URLParam(r, "key")); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	writeNoContent(w)
 }
 
@@ -898,5 +946,148 @@ func (app *Application) DeletePrivateNetworkInterfaceV2(w http.ResponseWriter, r
 		"help_message": "Can't delete a private network interface attached to a server",
 		"precondition": "resource_not_usable",
 		"type":         "precondition_failed",
+	})
+}
+
+// DetachPrivateNetworkInterfaceV2 handles
+// POST /instance/v2alpha1/zones/{zone}/servers/{server_id}/detach-private-network-interface
+//
+// CRITICAL[instance-v2-detach-pni]: provider 2.83.0 tears a private
+// network attachment down through THIS route, naming the interface in
+// `private_network_interface_id`. 2.81.0 used
+// `DELETE .../private-network-interfaces/{id}`, which always refuses
+// (CRITICAL[nic-delete-v2alpha1-always-refuses]) and is why teardown
+// was broken for two days -- upstream fixed it in
+// scaleway/terraform-provider-scaleway#4354 by changing the endpoint.
+// A mock without this route answers 501 and every compute teardown
+// fails against it.
+//
+// The field name was READ OFF THE WIRE, not guessed: there is no
+// published v2alpha1 spec, so provider 2.83.0 driving this route is the
+// only source for the shape. The first version of this handler assumed
+// `private_network_id` and still passed, because it fell back to
+// detaching every interface on the server when the id was absent -- a
+// mock permissive enough to accept a request naming nothing, which is
+// the failure mode a fidelity mock exists to prevent. Hence: the id is
+// required, it must name an interface on THIS server in THIS zone, and
+// anything else is a 404.
+func (app *Application) DetachPrivateNetworkInterfaceV2(w http.ResponseWriter, r *http.Request) {
+	zone := chi.URLParam(r, "zone")
+	serverID := chi.URLParam(r, "server_id")
+	if _, err := app.repo.GetServer(serverID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	body, err := decodeBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
+		return
+	}
+	nicID, _ := body["private_network_interface_id"].(string)
+	if strings.TrimSpace(nicID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"message": "private_network_interface_id is required",
+			"type":    "invalid_argument",
+		})
+		return
+	}
+
+	nics, err := app.repo.ListPrivateNICsByServer(serverID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	for _, nic := range nics {
+		if id, _ := nic["id"].(string); id != nicID {
+			continue
+		}
+		// Zone-checked like every other v2alpha1 interface route
+		// (CRITICAL[instance-v2-pni-zone-scoped]).
+		if nicZone, _ := nic["zone"].(string); nicZone != zone {
+			break
+		}
+		if err := app.repo.DeletePrivateNIC(nicID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		writeDetachedServer(w, app, serverID, zone)
+		return
+	}
+
+	// Not attached to this server. NOT treated as already-detached:
+	// silently accepting an id this server does not own is how a mock
+	// tells a client its mistake worked.
+	writeDomainError(w, models.ErrNotFound)
+}
+
+// writeDetachedServer answers a detach with the updated Server.
+//
+// The SDK decodes this response into a Server and returns *Server
+// (instance/v2alpha1: DetachServerPrivateNetworkInterface), so 204 is
+// the wrong shape even though provider 2.83.0 tolerates it -- it
+// leaves the caller a zero-valued Server, and any version that reads
+// the result breaks against the mock while working against Scaleway.
+// That is the mock being BEHIND its consumer, which is the failure
+// this endpoint exists because of.
+//
+// v2alpha1's Server is NOT v1's. Returning the stored v1 object was the
+// first attempt and the provider rejected it outright:
+//
+//	could not parse application/json response body: json: cannot
+//	unmarshal object into Go struct field .volumes of type
+//	[]*instance.ServerVolume
+//
+// v1 keys volumes by position in an OBJECT ({"0": {...}}); v2alpha1
+// takes an ARRAY. `commercial_type` becomes `server_type`, and the
+// attached networks come back as `private_network_interfaces`. So this
+// projects rather than echoes -- and the response is UNWRAPPED, unlike
+// v1, because the SDK decodes straight into Server instead of a
+// response struct that has a Server field
+// (cf. CRITICAL[instance-v2-pni-unwrapped]).
+func writeDetachedServer(w http.ResponseWriter, app *Application, serverID, zone string) {
+	server, err := app.repo.GetServer(serverID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	volumes := []any{}
+	if stored, ok := server["volumes"].(map[string]any); ok {
+		keys := make([]string, 0, len(stored))
+		for k := range stored {
+			keys = append(keys, k)
+		}
+		// Sorted, so the array order is stable across calls rather than
+		// map-iteration order.
+		sort.Strings(keys)
+		for _, k := range keys {
+			volumes = append(volumes, stored[k])
+		}
+	}
+
+	nics := []any{}
+	if attached, err := app.repo.ListPrivateNICsByServer(serverID); err == nil {
+		for _, nic := range attached {
+			nics = append(nics, nic)
+		}
+	}
+
+	serverType := server["server_type"]
+	if serverType == nil {
+		serverType = server["commercial_type"]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                         server["id"],
+		"name":                       server["name"],
+		"project_id":                 server["project"],
+		"tags":                       server["tags"],
+		"server_type":                serverType,
+		"status":                     server["state"],
+		"volumes":                    volumes,
+		"private_network_interfaces": nics,
+		"created_at":                 server["creation_date"],
+		"updated_at":                 server["modification_date"],
+		"zone":                       zone,
 	})
 }

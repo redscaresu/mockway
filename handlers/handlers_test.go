@@ -288,7 +288,10 @@ func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {
 	require.Equal(t, float64(20000000000), root["size"])
 	require.Equal(t, "l_ssd", root["volume_type"])
 	require.Equal(t, "available", root["state"])
-	require.Equal(t, true, root["boot"])
+	// false, not true: the spec's default. See
+	// CRITICAL[instance-root-volume-boot-default-false] -- returning
+	// true made every plan after an apply propose `boot = true -> false`.
+	require.Equal(t, false, root["boot"])
 	require.Equal(t, "fr-par-1", root["zone"])
 
 	status, body = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/"+server["id"].(string))
@@ -5740,13 +5743,16 @@ func TestGetServerUserDataKey(t *testing.T) {
 	})
 	serverID := unwrapInstanceResource(server)["id"].(string)
 
-	// Any key on an existing server returns 200 with empty body (user_data is discarded).
+	// A key never written is absent, not an empty stub: user_data now
+	// round-trips (CRITICAL[instance-user-data-round-trips]), so
+	// "nothing was set" and "something was set to empty" are different
+	// answers and the mock has to tell them apart.
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/instance/v1/zones/fr-par-1/servers/"+serverID+"/user_data/cloud-init", nil)
 	req.Header.Set("X-Auth-Token", "test-token")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 
 	// Non-existent server returns 404.
 	status, _ := testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/servers/00000000-0000-0000-0000-000000000000/user_data/cloud-init")
