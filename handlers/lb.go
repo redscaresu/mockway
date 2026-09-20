@@ -204,6 +204,17 @@ func (app *Application) DeleteFrontend(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+// CRITICAL[lb-backend-pool-mirrors-server-ip]: a Backend is WRITTEN
+// with `server_ip` and READ BACK as `pool`.
+//
+// The spec is explicit -- CreateBackend and UpdateBackend take
+// `server_ip`, and the Backend object returns `pool`: "List of IP
+// addresses of backend servers attached to this backend." Echoing the
+// request field back is not the same as answering: the provider maps
+// the response's `pool` onto `server_ips`, so a mock returning only
+// `server_ip` leaves that empty and every plan proposes re-adding the
+// backend servers. Exactly CRITICAL[lb-ip-ids-array], one field over.
+// Implemented in repository.CreateBackend and UpdateBackend.
 func (app *Application) CreateBackend(w http.ResponseWriter, r *http.Request) {
 	body, err := decodeBody(r)
 	if err != nil {
