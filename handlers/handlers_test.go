@@ -6898,3 +6898,24 @@ func TestDomainNotFoundCarriesResourceFields(t *testing.T) {
 	status = testutil.DoDelete(t, ts, "/domain/v2beta1/dns-zones/missing.example.com")
 	require.Equal(t, 404, status)
 }
+
+// A flexible IP keeps the project it was created in. It was overwritten with
+// the zero project, so a run-owned project's teardown could not find it.
+func TestLBIPKeepsRequestedProject(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	const project = "11111111-2222-3333-4444-555555555555"
+	status, ip := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/ips", map[string]any{"project_id": project})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, project, ip["project_id"])
+
+	status, ip = testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/ips", map[string]any{})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, "00000000-0000-0000-0000-000000000000", ip["project_id"])
+
+	status, lb := testutil.DoCreate(t, ts, "/lb/v1/zones/fr-par-1/lbs", map[string]any{"name": "lb", "project_id": project})
+	require.Equal(t, http.StatusOK, status)
+	inline := lb["ip"].([]any)[0].(map[string]any)
+	require.Equal(t, project, inline["project_id"])
+}
