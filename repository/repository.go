@@ -1869,10 +1869,13 @@ func (r *Repository) CreateLB(zone string, data map[string]any) (map[string]any,
 		"ip_address":      fakePublicIP(),
 		"lb_id":           id,
 		"reverse":         "",
-		"organization_id": "00000000-0000-0000-0000-000000000000",
-		"project_id":      "00000000-0000-0000-0000-000000000000",
+		"organization_id": models.DefaultProjectID,
+		"project_id":      models.DefaultProjectID,
 		"zone":            zone,
 		"region":          regionFromZone(zone),
+	}
+	if projectID, ok := data["project_id"].(string); ok && projectID != "" {
+		ipEntry["project_id"] = projectID
 	}
 	if resolvedIPID != "" {
 		existing, err := r.GetLBIP(resolvedIPID)
@@ -1997,8 +2000,12 @@ func (r *Repository) CreateLBIP(zone string, data map[string]any) (map[string]an
 	data["updated_at"] = now
 	data["lb_id"] = nil
 	data["reverse"] = ""
-	data["organization_id"] = "00000000-0000-0000-0000-000000000000"
-	data["project_id"] = "00000000-0000-0000-0000-000000000000"
+	if _, ok := data["organization_id"]; !ok {
+		data["organization_id"] = models.DefaultProjectID
+	}
+	if _, ok := data["project_id"]; !ok {
+		data["project_id"] = models.DefaultProjectID
+	}
 	data["region"] = regionFromZone(zone)
 	return r.createSimple("lb_ips", "zone", zone, data)
 }
