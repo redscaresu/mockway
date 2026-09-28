@@ -1445,7 +1445,7 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 					return nil, models.ErrNotFound
 				}
 				// Reject if the IP is already attached to another server.
-				if existingServer, _ := ipRec["server_id"].(string); existingServer != "" {
+				if ipRec["server"] != nil {
 					return nil, models.ErrConflict
 				}
 				resolvedIPs = append(resolvedIPs, map[string]any{
@@ -1533,7 +1533,8 @@ func (r *Repository) DeleteServer(id string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := r.detachIPsFromServerTx(tx, id); err != nil {
+	// An IP's binding lives only in this column (see ipSelect).
+	if _, err := tx.Exec(`UPDATE instance_ips SET server_id = NULL WHERE server_id = ?`, id); err != nil {
 		return err
 	}
 
@@ -1665,49 +1666,6 @@ func (r *Repository) DeleteStandaloneVolume(id string) error {
 	return r.deleteBy("instance_volumes", "id = ?", id)
 }
 
-func (r *Repository) detachIPsFromServerTx(tx *sql.Tx, serverID string) error {
-	rows, err := tx.Query(`SELECT id, data FROM instance_ips WHERE server_id = ?`, serverID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	type update struct {
-		id   string
-		data map[string]any
-	}
-	updates := []update{}
-	for rows.Next() {
-		var (
-			id  string
-			raw []byte
-		)
-		if err := rows.Scan(&id, &raw); err != nil {
-			return err
-		}
-		data, err := unmarshalData(raw)
-		if err != nil {
-			return err
-		}
-		data["server_id"] = nil
-		updates = append(updates, update{id: id, data: data})
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	for _, u := range updates {
-		b, err := marshalData(u.data)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE instance_ips SET server_id = NULL, data = ? WHERE id = ?`, b, u.id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (r *Repository) detachSecurityGroupFromServersTx(tx *sql.Tx, sgID string) error {
 	rows, err := tx.Query(`SELECT id, data FROM instance_servers WHERE security_group_id = ?`, sgID)
 	if err != nil {
@@ -1752,22 +1710,87 @@ func (r *Repository) detachSecurityGroupFromServersTx(tx *sql.Tx, sgID string) e
 	return nil
 }
 
+// ipSelect reads an instance IP with the server it is bound to. The
+// binding lives only in the server_id column (FK, ON DELETE SET NULL)
+// and every read builds the API's `server: {id, name}` from it, so no
+// path can answer a different shape and a renamed or deleted server
+// never leaves a stale copy in the blob.
+const ipSelect = `SELECT i.data, s.id, json_extract(s.data, '$.name')
+	FROM instance_ips i LEFT JOIN instance_servers s ON s.id = i.server_id`
+
+func scanIP(scan func(dest ...any) error) (map[string]any, error) {
+	var (
+		raw                  []byte
+		serverID, serverName sql.NullString
+	)
+	if err := scan(&raw, &serverID, &serverName); err != nil {
+		return nil, err
+	}
+	ip, err := unmarshalData(raw)
+	if err != nil {
+		return nil, err
+	}
+	delete(ip, "server_id") // stored by older mockway; the API has no such field
+	ip["server"] = nil
+	if serverID.Valid {
+		ip["server"] = map[string]any{"id": serverID.String, "name": serverName.String}
+	}
+	return ip, nil
+}
+
+// takeIPServerRef removes an IP's binding from a request body and
+// returns it. The API names it `server` (a server ID on create, a
+// nullable string on update); `server_id` is what older mockway took.
+func takeIPServerRef(body map[string]any) (serverID string, present bool) {
+	for _, k := range []string{"server_id", "server"} {
+		if v, ok := body[k]; ok {
+			serverID, _ = v.(string)
+			present = true
+			delete(body, k)
+		}
+	}
+	return serverID, present
+}
+
 func (r *Repository) CreateIP(zone string, data map[string]any) (map[string]any, error) {
 	data = cloneMap(data)
 	data["zone"] = zone
 	data["address"] = fakePublicIP()
-	serverID, _ := data["server_id"].(string)
+	serverID, _ := takeIPServerRef(data)
 	var extras []colVal
 	if serverID != "" {
 		extras = append(extras, colVal{name: "server_id", val: serverID})
 	}
-	return r.createSimple("instance_ips", "zone", zone, data, extras...)
+	created, err := r.createSimple("instance_ips", "zone", zone, data, extras...)
+	if err != nil {
+		return nil, err
+	}
+	return r.GetIP(created["id"].(string))
 }
 func (r *Repository) GetIP(id string) (map[string]any, error) {
-	return r.getJSONByID("instance_ips", "id", id)
+	ip, err := scanIP(r.db.QueryRow(ipSelect+` WHERE i.id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, models.ErrNotFound
+	}
+	return ip, err
 }
+
+// ListIPs lists one zone's IPs, or every zone's when zone is "".
 func (r *Repository) ListIPs(zone string) ([]map[string]any, error) {
-	return r.listJSON("instance_ips", "zone", zone)
+	rows, err := r.db.Query(ipSelect+` WHERE ? = '' OR i.zone = ? ORDER BY i.rowid`, zone, zone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		ip, err := scanIP(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ip)
+	}
+	return out, rows.Err()
 }
 func (r *Repository) DeleteIP(id string) error { return r.deleteBy("instance_ips", "id = ?", id) }
 
@@ -3248,33 +3271,25 @@ func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	next := patchMerge(current, patch, "id")
-	// The Scaleway API sends the server reference as "server" (a nullable string
-	// value), not "server_id". Normalise both field names so that attach/detach
-	// works regardless of which name the caller uses.
-	if s, ok := patch["server"]; ok {
-		serverVal, _ := s.(string)
-		next["server_id"] = serverVal
-		delete(next, "server")
-	}
-	b, err := marshalData(next)
+	patch = cloneMap(patch)
+	serverID, rebind := takeIPServerRef(patch)
+	b, err := marshalData(patchMerge(current, patch, "id"))
 	if err != nil {
 		return nil, err
 	}
-	// Keep server_id SQL column in sync so cascade/detach logic stays correct.
-	serverID, _ := next["server_id"].(string)
-	var serverIDArg any
-	if serverID != "" {
-		serverIDArg = serverID
+	q, args := `UPDATE instance_ips SET data = ? WHERE id = ?`, []any{b, id}
+	if rebind {
+		// `server: null` detaches: store NULL, not "", or the FK rejects it.
+		var serverIDArg any
+		if serverID != "" {
+			serverIDArg = serverID
+		}
+		q, args = `UPDATE instance_ips SET data = ?, server_id = ? WHERE id = ?`, []any{b, serverIDArg, id}
 	}
-	_, err = r.db.Exec(
-		`UPDATE instance_ips SET data = ?, server_id = ? WHERE id = ?`,
-		b, serverIDArg, id,
-	)
-	if err != nil {
+	if _, err := r.db.Exec(q, args...); err != nil {
 		return nil, mapInsertSQLError(err)
 	}
-	return next, nil
+	return r.GetIP(id)
 }
 
 func (r *Repository) UpdateLBIP(id string, patch map[string]any) (map[string]any, error) {
@@ -4530,7 +4545,7 @@ func (r *Repository) FullState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	ips, err := r.listJSON("instance_ips", "", "")
+	ips, err := r.ListIPs("")
 	if err != nil {
 		return nil, err
 	}
@@ -4768,7 +4783,7 @@ func (r *Repository) ServiceState(service string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		ips, err := r.listJSON("instance_ips", "", "")
+		ips, err := r.ListIPs("")
 		if err != nil {
 			return nil, err
 		}

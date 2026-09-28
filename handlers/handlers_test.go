@@ -400,8 +400,8 @@ func TestDeleteServerDetachesIP(t *testing.T) {
 	status, ip = testutil.DoGet(t, ts, "/instance/v1/zones/fr-par-1/ips/"+ipID)
 	require.Equal(t, 200, status)
 	got := unwrapInstanceResource(ip)
-	require.Contains(t, got, "server_id")
-	require.Nil(t, got["server_id"])
+	require.Contains(t, got, "server")
+	require.Nil(t, got["server"])
 }
 
 func TestDeleteServerCascadesPrivateNICs(t *testing.T) {
