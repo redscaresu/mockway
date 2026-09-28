@@ -2505,9 +2505,19 @@ func (r *Repository) CreateRDBInstance(region string, data map[string]any) (map[
 		}}
 	}
 	// Fields required by the TF provider's ResourceRdbInstanceRead to avoid nil derefs.
+	// The create request sends flat volume_type / volume_size; the read is volume{type, size}.
 	if _, ok := data["volume"]; !ok {
-		data["volume"] = map[string]any{"type": "lssd", "size": float64(10000000000)}
+		volume := map[string]any{"type": "lssd", "size": float64(10000000000)}
+		if v, ok := data["volume_type"]; ok && v != nil {
+			volume["type"] = v
+		}
+		if v, ok := data["volume_size"]; ok && v != nil {
+			volume["size"] = v
+		}
+		data["volume"] = volume
 	}
+	delete(data, "volume_type")
+	delete(data, "volume_size")
 	// The Terraform provider sends disable_backup as a flat field; translate it
 	// to backup_schedule.disabled so that GET returns the shape the provider reads.
 	if v, ok := data["disable_backup"]; ok {
@@ -3712,6 +3722,13 @@ func (r *Repository) CreateBlockVolume(zone string, data map[string]any) (map[st
 	data["status"] = "available"
 	data["created_at"] = now
 	data["updated_at"] = now
+	// The create request sends the size inside from_empty; the read is a top-level size.
+	if fe, ok := data["from_empty"].(map[string]any); ok && fe["size"] != nil {
+		if _, ok := data["size"]; !ok {
+			data["size"] = fe["size"]
+		}
+	}
+	delete(data, "from_empty")
 	if _, ok := data["size"]; !ok {
 		data["size"] = float64(20000000000)
 	}

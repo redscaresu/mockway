@@ -741,3 +741,46 @@ func TestExplicitVPCIDIsUnchanged(t *testing.T) {
 	})
 	assert.Error(t, err, "a vpc_id that does not exist must still be refused")
 }
+
+func TestCreateRDBInstanceKeepsRequestedVolume(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	inst, err := repo.CreateRDBInstance("fr-par", map[string]any{
+		"name": "db", "volume_type": "sbs_5k", "volume_size": float64(20000000000),
+	})
+	require.NoError(t, err)
+	got, err := repo.GetRDBInstance(inst["id"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"type": "sbs_5k", "size": float64(20000000000)}, got["volume"])
+	assert.NotContains(t, got, "volume_type")
+	assert.NotContains(t, got, "volume_size")
+
+	inst, err = repo.CreateRDBInstance("fr-par", map[string]any{"name": "db2"})
+	require.NoError(t, err)
+	got, err = repo.GetRDBInstance(inst["id"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"type": "lssd", "size": float64(10000000000)}, got["volume"])
+}
+
+func TestCreateBlockVolumeKeepsFromEmptySize(t *testing.T) {
+	repo, err := repository.New(":memory:")
+	require.NoError(t, err)
+	defer repo.Close()
+
+	vol, err := repo.CreateBlockVolume("fr-par-1", map[string]any{
+		"name": "data", "from_empty": map[string]any{"size": float64(10000000000)},
+	})
+	require.NoError(t, err)
+	got, err := repo.GetBlockVolume(vol["id"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, float64(10000000000), got["size"])
+	assert.NotContains(t, got, "from_empty")
+
+	vol, err = repo.CreateBlockVolume("fr-par-1", map[string]any{"name": "data2"})
+	require.NoError(t, err)
+	got, err = repo.GetBlockVolume(vol["id"].(string))
+	require.NoError(t, err)
+	assert.Equal(t, float64(20000000000), got["size"])
+}

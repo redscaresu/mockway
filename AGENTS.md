@@ -288,7 +288,7 @@ go test -tags provider_e2e ./e2e -run TestExamplesUpdatesIdempotency -v   # upda
 **Common drift causes**:
 - A binding answered under the request's field name, not the read's: the API takes an IP's `server` as an ID but returns `server: {id, name}`. A computed attribute read as `""` is NOT a plan diff, so the no-op gate misses it; assert the read-back value (e.g. a data-source `postcondition`, see `examples/working/instance_ip_server/`)
 - Missing `status` field on GET — provider polls for `"ready"`/`"running"` on refresh
-- Create-vs-read field name divergence — provider sends flat `foo_id` on create but reads nested `foo.id` on GET; repository must translate (e.g. block snapshot `volume_id` → `parent_volume.id`, RDB `disable_backup` → `backup_schedule.disabled`)
+- Create-vs-read field name divergence — provider sends flat `foo_id` on create but reads nested `foo.id` on GET; repository must translate (e.g. block snapshot `volume_id` → `parent_volume.id`, RDB `disable_backup` → `backup_schedule.disabled`, RDB `volume_type`/`volume_size` → `volume{type, size}`, block volume `from_empty.size` → `size`). A default that fills the read field when the request's field is ignored applies cleanly and drifts only on the converge plan
 - Create-vs-update field name divergence — provider uses a *different* field name in PATCH than in POST; e.g. RDB sends `disable_backup` on POST but `is_backup_schedule_disabled` on PATCH. **Detection**: capture the actual PATCH body (see Proxy-Capture below) — do not assume the PATCH field names match the POST field names.
 - Array field returned as `null` instead of `[]`
 - Field present on create response but absent on GET
