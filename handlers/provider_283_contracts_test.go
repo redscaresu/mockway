@@ -235,3 +235,91 @@ func TestContract_instance_v2_detach_pni(t *testing.T) {
 	status, _ = testutil.DoGet(t, ts, "/instance/v2alpha1/zones/fr-par-1/private-network-interfaces/"+nicID)
 	assert.Equal(t, http.StatusNotFound, status, "the interface is gone after a detach")
 }
+
+// TestContract_instance_ip_server_summary — wire-shape regression for
+// the CRITICAL[instance-ip-server-summary] invariant in
+// handlers/instance.go::GetIP.
+//
+// The SDK decodes an IP's binding from `server` (a ServerSummary) and
+// there is no flat `server_id` on the wire. Answering `server_id` made
+// the provider read every IP as unbound: a re-plan after apply showed
+// `server_id = ""` on an IP that was attached, and a plan-time policy
+// denying bound IPs saw nothing to deny. The plan was a no-op either
+// way (server_id is computed), so no idempotency check noticed.
+func TestContract_instance_ip_server_summary(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+	const zone = "/instance/v1/zones/fr-par-1"
+
+	status, created := testutil.DoCreate(t, ts, zone+"/servers", map[string]any{"name": "web-1"})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+
+	status, created = testutil.DoCreate(t, ts, zone+"/ips", map[string]any{})
+	require.Equal(t, http.StatusOK, status)
+	ip := unwrapInstanceResource(created)
+	ipID := ip["id"].(string)
+	assertIPServer := func(t *testing.T, ip map[string]any, want any) {
+		t.Helper()
+		assert.Equal(t, want, ip["server"])
+		assert.Contains(t, ip, "server", "an unbound IP answers server: null, not a missing key")
+		assert.NotContains(t, ip, "server_id", "the API has no flat server_id")
+	}
+	getIP := func(t *testing.T) map[string]any {
+		t.Helper()
+		status, body := testutil.DoGet(t, ts, zone+"/ips/"+ipID)
+		require.Equal(t, http.StatusOK, status)
+		return unwrapInstanceResource(body)
+	}
+	listIP := func(t *testing.T) map[string]any {
+		t.Helper()
+		status, body := testutil.DoList(t, ts, zone+"/ips")
+		require.Equal(t, http.StatusOK, status)
+		ips := body["ips"].([]any)
+		require.Len(t, ips, 1)
+		return ips[0].(map[string]any)
+	}
+	summary := func(name string) map[string]any { return map[string]any{"id": serverID, "name": name} }
+
+	assertIPServer(t, ip, nil)
+	assertIPServer(t, getIP(t), nil)
+	assertIPServer(t, listIP(t), nil)
+
+	// Attach the way the provider does: PATCH the IP with `server`.
+	status, patched := testutil.DoPatch(t, ts, zone+"/ips/"+ipID, map[string]any{"server": serverID})
+	require.Equal(t, http.StatusOK, status)
+	assertIPServer(t, unwrapInstanceResource(patched), summary("web-1"))
+	assertIPServer(t, getIP(t), summary("web-1"))
+	assertIPServer(t, listIP(t), summary("web-1"))
+
+	// The summary names the server as it is now, not as it was at attach.
+	status, _ = testutil.DoPatch(t, ts, zone+"/servers/"+serverID, map[string]any{"name": "web-2"})
+	require.Equal(t, http.StatusOK, status)
+	assertIPServer(t, getIP(t), summary("web-2"))
+
+	// Detach the way the provider does: PATCH the IP with `server: null`.
+	status, patched = testutil.DoPatch(t, ts, zone+"/ips/"+ipID, map[string]any{"server": nil})
+	require.Equal(t, http.StatusOK, status)
+	assertIPServer(t, unwrapInstanceResource(patched), nil)
+	assertIPServer(t, getIP(t), nil)
+
+	// A server created with the IP in public_ips binds it too, and
+	// deleting that server unbinds it.
+	status, created = testutil.DoCreate(t, ts, zone+"/servers", map[string]any{
+		"name": "web-3", "public_ips": []any{ipID},
+	})
+	require.Equal(t, http.StatusOK, status)
+	serverID = resourceID(created)
+	assertIPServer(t, getIP(t), summary("web-3"))
+
+	require.Equal(t, http.StatusNoContent, testutil.DoDelete(t, ts, zone+"/servers/"+serverID))
+	assertIPServer(t, getIP(t), nil)
+
+	// CreateIp names the binding `server` as well.
+	status, created = testutil.DoCreate(t, ts, zone+"/servers", map[string]any{"name": "web-4"})
+	require.Equal(t, http.StatusOK, status)
+	serverID = resourceID(created)
+	status, created = testutil.DoCreate(t, ts, zone+"/ips", map[string]any{"server": serverID})
+	require.Equal(t, http.StatusOK, status)
+	assertIPServer(t, unwrapInstanceResource(created), summary("web-4"))
+}

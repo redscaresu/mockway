@@ -206,8 +206,8 @@ func TestDeleteServerDetachesIPAndCascadesNICsRepository(t *testing.T) {
 
 	gotIP, err := repo.GetIP(ip["id"].(string))
 	require.NoError(t, err)
-	require.Contains(t, gotIP, "server_id")
-	require.Nil(t, gotIP["server_id"])
+	require.Contains(t, gotIP, "server")
+	require.Nil(t, gotIP["server"])
 
 	nics, err := repo.ListPrivateNICsByServer(serverID)
 	require.NoError(t, err)

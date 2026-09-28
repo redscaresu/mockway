@@ -474,6 +474,14 @@ func (app *Application) CreateIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ip": out})
 }
 
+// GetIP handles GET /ips/{ip_id}.
+//
+// CRITICAL[instance-ip-server-summary]: an IP names its binding as
+// `server: {id, name}` (null when unbound), never a flat `server_id`,
+// on every IP response: create, get, list, update. The SDK decodes only
+// `server`, so a flat field reads as unbound and the provider's
+// computed server_id comes back "" on a bound IP without any plan diff.
+// The repository builds the shape on read (see repository.ipSelect).
 func (app *Application) GetIP(w http.ResponseWriter, r *http.Request) {
 	out, err := app.repo.GetIP(chi.URLParam(r, "ip_id"))
 	if err != nil {

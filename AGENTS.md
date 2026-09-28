@@ -106,7 +106,7 @@ Per-type tables with a JSON `data` blob for full resource data, plus extracted F
 |----------|-----------------|
 | All UUID-based | `"id": "<uuid>"` |
 | Instance servers | `"state": "stopped"`, `"creation_date"`, `"modification_date"` (RFC3339) |
-| Instance IPs | `"address": "51.15.<random>.x"` |
+| Instance IPs | `"address": "51.15.<random>.x"`; `"server": {"id","name"}` or `null`, built on every read from the `server_id` column (no flat `server_id` on the wire) |
 | Load balancers | `"status": "ready"`, `"ip": [{"id":"<uuid>","ip_address":"51.15.x.x","lb_id":"<id>"}]` |
 | K8s clusters/pools | `"status": "ready"`, `"created_at"`, `"updated_at"` |
 | RDB instances | `"status": "ready"`, `"endpoints": [{"id":"<uuid>","load_balancer":{},"private_network":null,"ip":"51.15.x.x","port":5432}]` |
@@ -286,6 +286,7 @@ go test -tags provider_e2e ./e2e -run TestExamplesUpdatesIdempotency -v   # upda
 ```
 
 **Common drift causes**:
+- A binding answered under the request's field name, not the read's: the API takes an IP's `server` as an ID but returns `server: {id, name}`. A computed attribute read as `""` is NOT a plan diff, so the no-op gate misses it; assert the read-back value (e.g. a data-source `postcondition`, see `examples/working/instance_ip_server/`)
 - Missing `status` field on GET — provider polls for `"ready"`/`"running"` on refresh
 - Create-vs-read field name divergence — provider sends flat `foo_id` on create but reads nested `foo.id` on GET; repository must translate (e.g. block snapshot `volume_id` → `parent_volume.id`, RDB `disable_backup` → `backup_schedule.disabled`)
 - Create-vs-update field name divergence — provider uses a *different* field name in PATCH than in POST; e.g. RDB sends `disable_backup` on POST but `is_backup_schedule_disabled` on PATCH. **Detection**: capture the actual PATCH body (see Proxy-Capture below) — do not assume the PATCH field names match the POST field names.
@@ -467,7 +468,7 @@ next["updated_at"] = nowRFC3339()
 - `UpdateCluster`: normalize `auto_upgrade.enable` → `auto_upgrade.enabled` (provider uses `enable` in PATCH, provider reads `enabled` on GET)
 - `UpdateRDBInstance`: translate both `disable_backup` and `is_backup_schedule_disabled` → `backup_schedule.disabled`
 - `UpdateServer`: reconcile `security_group` / `security_group_id` FK consistency + SQL column sync
-- `UpdateIP`: normalize `server` → `server_id` field name + SQL column sync
+- `UpdateIP`: take the binding from `server` (or legacy `server_id`) into the `server_id` SQL column only; the blob never holds it
 - `UpdateBlockVolume`: recompute `specs.perf_iops` when volume type changes
 - `UpdateVPC`: sync `region` SQL column
 - `UpdatePrivateNetwork`: sync `vpc_id` and `region` SQL columns
