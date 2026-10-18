@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/redscaresu/mockway/testutil"
@@ -265,6 +266,63 @@ func TestCreateServerResolvesPublicIPFromIPsTable(t *testing.T) {
 	pubIPs, ok := server["public_ips"].([]any)
 	require.True(t, ok)
 	require.Len(t, pubIPs, 1)
+}
+
+// The provider moves a server's ip_id by PATCHing the IPs, never the
+// server, so the server's public_ips must follow the IPs' binding.
+func TestServerPublicIPsFollowIPAttachAfterCreate(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+	zone := "/instance/v1/zones/fr-par-1"
+
+	status, created := testutil.DoCreate(t, ts, zone+"/servers", map[string]any{"name": "web"})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+	newIP := func() map[string]any {
+		status, body := testutil.DoCreate(t, ts, zone+"/ips", map[string]any{})
+		require.Equal(t, http.StatusOK, status)
+		ip := unwrapInstanceResource(body)
+		return map[string]any{"id": ip["id"], "address": ip["address"], "dynamic": false}
+	}
+	a, b := newIP(), newIP()
+	attach := func(ip map[string]any, server any) {
+		status, _ := testutil.DoPatch(t, ts, zone+"/ips/"+ip["id"].(string), map[string]any{"server": server})
+		require.Equal(t, http.StatusOK, status)
+	}
+	assertPublicIPs := func(want ...map[string]any) {
+		t.Helper()
+		status, body := testutil.DoGet(t, ts, zone+"/servers/"+serverID)
+		require.Equal(t, http.StatusOK, status)
+		server := unwrapInstanceResource(body)
+		wantIPs := []any{}
+		var wantIP any
+		for _, ip := range want {
+			wantIPs = append(wantIPs, ip)
+		}
+		if len(want) > 0 {
+			wantIP = want[0]
+		}
+		assert.Equal(t, wantIPs, server["public_ips"])
+		assert.Equal(t, wantIP, server["public_ip"])
+
+		status, body = testutil.DoList(t, ts, zone+"/servers")
+		require.Equal(t, http.StatusOK, status)
+		listed := body["servers"].([]any)[0].(map[string]any)
+		assert.Equal(t, wantIPs, listed["public_ips"], "list answers what get does")
+	}
+
+	assertPublicIPs()
+	attach(a, serverID)
+	assertPublicIPs(a)
+
+	// ip_id a -> b: the provider detaches a, then attaches b.
+	attach(a, nil)
+	assertPublicIPs()
+	attach(b, serverID)
+	assertPublicIPs(b)
+
+	require.Equal(t, http.StatusNoContent, testutil.DoDelete(t, ts, zone+"/ips/"+b["id"].(string)))
+	assertPublicIPs()
 }
 
 func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {

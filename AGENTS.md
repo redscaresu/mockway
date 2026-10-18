@@ -105,7 +105,7 @@ Per-type tables with a JSON `data` blob for full resource data, plus extracted F
 | Resource | Fields Injected |
 |----------|-----------------|
 | All UUID-based | `"id": "<uuid>"` |
-| Instance servers | `"state": "stopped"`, `"creation_date"`, `"modification_date"` (RFC3339) |
+| Instance servers | `"state": "stopped"`, `"creation_date"`, `"modification_date"` (RFC3339); `"public_ips"` / `"public_ip"` built on every read from the IPs' `server_id` column, so an IP attached or detached after create (`PATCH /ips/{id} {server}`, how the provider moves `ip_id`) shows on the server |
 | Instance IPs | `"address": "51.15.<random>.x"`; `"server": {"id","name"}` or `null`, built on every read from the `server_id` column (no flat `server_id` on the wire) |
 | Load balancers | `"status": "ready"`, `"ip": [{"id":"<uuid>","ip_address":"51.15.x.x","lb_id":"<id>"}]` |
 | K8s clusters/pools | `"status": "ready"`, `"created_at"`, `"updated_at"` |

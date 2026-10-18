@@ -1436,7 +1436,7 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	data["state"] = "stopped"
 	data["creation_date"] = now
 	data["modification_date"] = now
-	var resolvedIPs []any
+	var ipIDs []string
 	if rawIPs, ok := data["public_ips"].([]any); ok {
 		for _, raw := range rawIPs {
 			if ipID, ok := raw.(string); ok && ipID != "" {
@@ -1448,21 +1448,13 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 				if ipRec["server"] != nil {
 					return nil, models.ErrConflict
 				}
-				resolvedIPs = append(resolvedIPs, map[string]any{
-					"id":      ipID,
-					"address": ipRec["address"],
-					"dynamic": false,
-				})
+				ipIDs = append(ipIDs, ipID)
 			}
 		}
 	}
-	if len(resolvedIPs) > 0 {
-		data["public_ips"] = resolvedIPs
-		data["public_ip"] = resolvedIPs[0]
-	} else {
-		data["public_ips"] = []any{}
-		data["public_ip"] = nil
-	}
+	// Not stored: every read builds them from the IPs' binding (see withPublicIPs).
+	delete(data, "public_ips")
+	delete(data, "public_ip")
 	serverName, _ := data["name"].(string)
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
@@ -1507,24 +1499,72 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	}
 	// Attach public IPs to this server in the instance_ips table.
 	serverID := result["id"].(string)
-	if rawIPs, ok := data["public_ips"].([]any); ok {
-		for _, raw := range rawIPs {
-			if ipMap, ok := raw.(map[string]any); ok {
-				if ipID, ok := ipMap["id"].(string); ok && ipID != "" {
-					if _, err := r.UpdateIP(ipID, map[string]any{"server": serverID}); err != nil {
-						return nil, fmt.Errorf("attach public IP %s to server: %w", ipID, err)
-					}
-				}
-			}
+	for _, ipID := range ipIDs {
+		if _, err := r.UpdateIP(ipID, map[string]any{"server": serverID}); err != nil {
+			return nil, fmt.Errorf("attach public IP %s to server: %w", ipID, err)
 		}
 	}
-	return result, nil
+	return r.withPublicIPs(result)
 }
+
+// withPublicIPs sets a server's public_ips and public_ip from the IPs
+// bound to it. The binding lives only in instance_ips.server_id (see
+// ipSelect), so an IP attached, detached or deleted after the server
+// was created shows on the next read: a copy in the server's blob went
+// stale and the provider re-planned ip_id.
+func (r *Repository) withPublicIPs(server map[string]any) (map[string]any, error) {
+	rows, err := r.db.Query(
+		`SELECT id, json_extract(data, '$.address') FROM instance_ips WHERE server_id = ? ORDER BY rowid`,
+		server["id"],
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ips := []any{}
+	for rows.Next() {
+		var id string
+		var address sql.NullString
+		if err := rows.Scan(&id, &address); err != nil {
+			return nil, err
+		}
+		ips = append(ips, map[string]any{"id": id, "address": address.String, "dynamic": false})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	server["public_ips"] = ips
+	server["public_ip"] = nil
+	if len(ips) > 0 {
+		server["public_ip"] = ips[0]
+	}
+	return server, nil
+}
+
 func (r *Repository) GetServer(id string) (map[string]any, error) {
-	return r.getJSONByID("instance_servers", "id", id)
+	server, err := r.getJSONByID("instance_servers", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	return r.withPublicIPs(server)
 }
+
+// ListServers lists one zone's servers, or every zone's when zone is "".
 func (r *Repository) ListServers(zone string) ([]map[string]any, error) {
-	return r.listJSON("instance_servers", "zone", zone)
+	col := "zone"
+	if zone == "" {
+		col = ""
+	}
+	servers, err := r.listJSON("instance_servers", col, zone)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range servers {
+		if _, err := r.withPublicIPs(s); err != nil {
+			return nil, err
+		}
+	}
+	return servers, nil
 }
 func (r *Repository) DeleteServer(id string) error {
 	tx, err := r.db.Begin()
@@ -3202,6 +3242,8 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	}
 	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
+	delete(next, "public_ips") // built on read; see withPublicIPs
+	delete(next, "public_ip")
 
 	// Reconcile security_group and security_group_id so that both JSON fields
 	// and the SQL FK column stay consistent after a patch.
@@ -3273,7 +3315,7 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	if err != nil {
 		return nil, mapInsertSQLError(err)
 	}
-	return next, nil
+	return r.withPublicIPs(next)
 }
 
 func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, error) {
@@ -4558,7 +4600,7 @@ func (r *Repository) DeleteRegistryNamespace(id string) error {
 }
 
 func (r *Repository) FullState() (map[string]any, error) {
-	servers, err := r.listJSON("instance_servers", "", "")
+	servers, err := r.ListServers("")
 	if err != nil {
 		return nil, err
 	}
@@ -4796,7 +4838,7 @@ func (r *Repository) FullState() (map[string]any, error) {
 func (r *Repository) ServiceState(service string) (map[string]any, error) {
 	switch service {
 	case "instance":
-		servers, err := r.listJSON("instance_servers", "", "")
+		servers, err := r.ListServers("")
 		if err != nil {
 			return nil, err
 		}
