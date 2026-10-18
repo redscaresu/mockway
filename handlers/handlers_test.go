@@ -407,6 +407,32 @@ func TestUpdateServerPublicIPsRebinds(t *testing.T) {
 	assert.Nil(t, ipServer(c))
 }
 
+// A server PATCH's public_ips replaces the server's IPs, so anything
+// but a list of IP IDs is rejected, not read as an empty list that
+// detaches them all. The objects GET answers are the likeliest mistake.
+func TestUpdateServerPublicIPsRejectsNonIDs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a := newPublicIP(t, ts)
+	status, created := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{
+		"name": "web", "public_ips": []any{a["id"]},
+	})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+
+	for name, publicIPs := range map[string]any{
+		"objects GET answers": []any{a},
+		"empty ID":            []any{""},
+		"not a list":          a["id"],
+	} {
+		status, body := testutil.DoPatch(t, ts, instanceZone+"/servers/"+serverID, map[string]any{"public_ips": publicIPs})
+		assert.Equal(t, http.StatusBadRequest, status, name)
+		assert.Contains(t, body["message"], "public_ips", name)
+		assertServerPublicIPs(t, ts, serverID, a)
+	}
+}
+
 func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()

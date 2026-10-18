@@ -263,12 +263,37 @@ func (app *Application) UpdateServer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"message": "invalid json", "type": "invalid_argument"})
 		return
 	}
+	if msg := publicIPsArgError(body); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": msg, "type": "invalid_argument"})
+		return
+	}
 	out, err := app.repo.UpdateServer(chi.URLParam(r, "server_id"), body)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"server": out})
+}
+
+// publicIPsArgError says what is wrong with a server PATCH's public_ips,
+// or returns "". The field replaces the server's IPs, so a value that is
+// not a list of IP IDs (e.g. the objects GET answers) must not read as an
+// empty list, which would detach every IP. null leaves them alone.
+func publicIPsArgError(body map[string]any) string {
+	raw, ok := body["public_ips"]
+	if !ok || raw == nil {
+		return ""
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return "public_ips must be a list of IP IDs"
+	}
+	for i, v := range list {
+		if id, ok := v.(string); !ok || id == "" {
+			return fmt.Sprintf("public_ips[%d] must be an IP ID", i)
+		}
+	}
+	return ""
 }
 
 // CRITICAL[instance-user-data-round-trips]: the keys written by PATCH

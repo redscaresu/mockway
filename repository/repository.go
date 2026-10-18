@@ -588,10 +588,13 @@ func (r *Repository) migrate() error {
 			// one path.
 			//
 			// Older mockway kept that order only in the server's stored
-			// public_ips, so bound IPs take their place from it. An IP
-			// bound later through PATCH /ips is missing from that stale
-			// copy; it goes after the listed ones, in creation order
-			// (COUNT(*) is more than any listed position).
+			// public_ips, so a bound IP takes its position in that list
+			// (1..length). An IP bound later through PATCH /ips is
+			// missing from that stale copy; it takes the list's length
+			// plus its rowid, after every listed position, in creation
+			// order. The copies are then dropped: every read builds them
+			// (see withPublicIPs), and writers that keep the blob as
+			// they found it would carry them forward.
 			version: 2,
 			stmts: []string{
 				`ALTER TABLE instance_ips ADD COLUMN bind_seq INTEGER`,
@@ -601,8 +604,11 @@ func (r *Repository) migrate() error {
 						WHERE s.id = instance_ips.server_id
 							AND j.type = 'object'
 							AND json_extract(j.value, '$.id') = instance_ips.id),
-					(SELECT COUNT(*) FROM instance_ips) + rowid)
+					(SELECT COALESCE(json_array_length(s.data, '$.public_ips'), 0)
+						FROM instance_servers s
+						WHERE s.id = instance_ips.server_id) + rowid)
 				WHERE server_id IS NOT NULL`,
+				`UPDATE instance_servers SET data = json_remove(data, '$.public_ips', '$.public_ip')`,
 			},
 		},
 	}
@@ -613,23 +619,44 @@ func (r *Repository) migrate() error {
 		if applied == 1 {
 			continue
 		}
-		// Disable FK checks during table recreation to avoid constraint errors
-		// while the _new tables are being populated.
-		if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
-			return fmt.Errorf("migration %d: disable FK: %w", m.version, err)
+		if err := r.runMigration(m.version, m.stmts); err != nil {
+			return err
 		}
-		for _, stmt := range m.stmts {
-			if _, err := r.db.Exec(stmt); err != nil {
-				_, _ = r.db.Exec(`PRAGMA foreign_keys = ON`)
-				return fmt.Errorf("migration %d: %w", m.version, err)
-			}
+	}
+	return nil
+}
+
+// runMigration applies one version's statements and records the version
+// in one transaction, so a failure part-way leaves the version unapplied
+// and the next boot retries it whole instead of tripping on half its DDL
+// ("duplicate column name"). FK checks are off around it, since a PRAGMA
+// is a no-op inside a transaction, so table rebuilds can copy rows across.
+func (r *Repository) runMigration(version int, stmts []string) (err error) {
+	if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("migration %d: disable FK: %w", version, err)
+	}
+	defer func() {
+		if _, fkErr := r.db.Exec(`PRAGMA foreign_keys = ON`); fkErr != nil && err == nil {
+			err = fmt.Errorf("migration %d: re-enable FK: %w", version, fkErr)
 		}
-		if _, err := r.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-			return fmt.Errorf("migration %d: re-enable FK: %w", m.version, err)
+	}()
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("migration %d: %w", version, err)
+	}
+	// Runs before the FK re-enable above: one connection (openDB), so the
+	// transaction must let go of it first.
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("migration %d: %w", version, err)
 		}
-		if _, err := r.db.Exec(`INSERT INTO schema_versions (version) VALUES (?)`, m.version); err != nil {
-			return fmt.Errorf("migration %d: record version: %w", m.version, err)
-		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_versions (version) VALUES (?)`, version); err != nil {
+		return fmt.Errorf("migration %d: record version: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration %d: commit: %w", version, err)
 	}
 	return nil
 }
