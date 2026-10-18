@@ -10,7 +10,9 @@ import (
 
 // oldBindSchemaDB writes a --db file as mockway left it before bind_seq:
 // no bind_seq column, migration 2 unrecorded, and a server whose stored
-// public_ips lists three IPs since deleted, then b, then a. spare, created
+// public_ips lists three IPs since deleted, then b, then a. b is stored
+// as an object, as CreateServer stored it; a as a plain ID, as the old
+// UpdateServer stored a PATCH's public_ips. spare, created
 // before them all, was attached later through PATCH /ips, which that copy
 // never saw. Internal because the old schema is only reachable below the
 // public API.
@@ -36,7 +38,7 @@ func oldBindSchemaDB(t *testing.T) (path, serverID, spare, a, b string) {
 		`ALTER TABLE instance_ips DROP COLUMN bind_seq`,
 		`DELETE FROM schema_versions WHERE version = 2`,
 		`UPDATE instance_servers SET data = json_set(data,
-			'$.public_ips', json_array(` + gone("gone-1") + `, ` + gone("gone-2") + `, ` + gone("gone-3") + `, ` + gone(b) + `, ` + gone(a) + `),
+			'$.public_ips', json_array(` + gone("gone-1") + `, ` + gone("gone-2") + `, ` + gone("gone-3") + `, ` + gone(b) + `, '` + a + `'),
 			'$.public_ip', ` + gone("gone-1") + `)`,
 	} {
 		_, err := repo.db.Exec(stmt)

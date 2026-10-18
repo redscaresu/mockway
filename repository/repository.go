@@ -589,7 +589,8 @@ func (r *Repository) migrate() error {
 			//
 			// Older mockway kept that order only in the server's stored
 			// public_ips, so a bound IP takes its position in that list
-			// (1..length). An IP bound later through PATCH /ips is
+			// (1..length). An entry is an object, as CreateServer
+			// stored it, or a plain ID, as UpdateServer stored a PATCH's. An IP bound later through PATCH /ips is
 			// missing from that stale copy; it takes the list's length
 			// plus its rowid, after every listed position, in creation
 			// order. The copies are then dropped: every read builds them
@@ -602,8 +603,8 @@ func (r *Repository) migrate() error {
 					(SELECT j.key + 1
 						FROM instance_servers s, json_each(s.data, '$.public_ips') j
 						WHERE s.id = instance_ips.server_id
-							AND j.type = 'object'
-							AND json_extract(j.value, '$.id') = instance_ips.id),
+							AND (j.type = 'object' AND json_extract(j.value, '$.id') = instance_ips.id
+								OR j.type = 'text' AND j.value = instance_ips.id)),
 					(SELECT COALESCE(json_array_length(s.data, '$.public_ips'), 0)
 						FROM instance_servers s
 						WHERE s.id = instance_ips.server_id) + rowid)
@@ -1549,13 +1550,22 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 // bindableIPs reads the IP IDs a server request lists in public_ips, in
 // order, and checks each exists (404) and is not bound to a server
 // other than serverID (409; serverID is "" for a server being created).
+// null lists none. Anything but a list of IP IDs (e.g. the objects GET
+// answers) is a 400: read as an empty list, it would create a server
+// without its IPs, or detach every IP on a PATCH.
 func (r *Repository) bindableIPs(serverID string, raw any) ([]string, error) {
-	list, _ := raw.([]any)
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, &models.InvalidArgumentError{Message: "public_ips must be a list of IP IDs"}
+	}
 	var ipIDs []string
-	for _, v := range list {
-		ipID, _ := v.(string)
-		if ipID == "" {
-			continue
+	for i, v := range list {
+		ipID, ok := v.(string)
+		if !ok || ipID == "" {
+			return nil, &models.InvalidArgumentError{Message: fmt.Sprintf("public_ips[%d] must be an IP ID", i)}
 		}
 		ip, err := r.GetIP(ipID)
 		if err != nil {
@@ -3333,11 +3343,11 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 		return nil, err
 	}
 	// A PATCH's public_ips replaces the server's IPs (UpdateServerRequest.PublicIPs).
-	rawIPs, rebindIPs := patch["public_ips"].([]any)
-	ipIDs, err := r.bindableIPs(id, rawIPs)
+	ipIDs, err := r.bindableIPs(id, patch["public_ips"])
 	if err != nil {
 		return nil, err
 	}
+	rebindIPs := patch["public_ips"] != nil
 	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
 	delete(next, "public_ips") // built on read; see withPublicIPs
@@ -3460,7 +3470,7 @@ func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, 
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`UPDATE instance_ips SET data = ? WHERE id = ?`, b, id); err != nil {
-		return nil, err
+		return nil, mapInsertSQLError(err)
 	}
 	if rebind {
 		if err := bindIP(tx, id, serverID); err != nil {
@@ -3468,7 +3478,7 @@ func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, 
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, mapInsertSQLError(err)
 	}
 	return r.GetIP(id)
 }

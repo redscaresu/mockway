@@ -528,6 +528,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 // those into Error() formatting; without them the SDK formats as
 // "resource  with ID  is not found" (note the empty fields).
 func writeDomainErrorFor(w http.ResponseWriter, err error, resource, resourceID string) {
+	var invalid *models.InvalidArgumentError
 	switch {
 	case errors.Is(err, models.ErrNotFound):
 		body := map[string]any{"type": "not_found"}
@@ -541,6 +542,8 @@ func writeDomainErrorFor(w http.ResponseWriter, err error, resource, resourceID 
 		writeJSON(w, http.StatusNotFound, body)
 	case errors.Is(err, models.ErrConflict):
 		writeJSON(w, http.StatusConflict, map[string]any{"message": "cannot delete: dependents exist", "type": "conflict"})
+	case errors.As(err, &invalid):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"message": invalid.Message, "type": "invalid_argument"})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"message": "internal server error", "type": "internal"})
 	}

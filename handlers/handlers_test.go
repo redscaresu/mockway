@@ -212,6 +212,9 @@ func TestCreateServerNormalizesImageUUIDToObject(t *testing.T) {
 	require.Equal(t, imageID, image["name"])
 }
 
+// public_ip is built on read, so whatever a create sends is overridden.
+// A malformed public_ips is a 400 instead (TestCreateServerRejectsNonIDPublicIPs):
+// it names the IPs to bind.
 func TestCreateServerOverridesMalformedPublicIPFields(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -219,9 +222,8 @@ func TestCreateServerOverridesMalformedPublicIPFields(t *testing.T) {
 	status, body := testutil.DoCreate(t, ts,
 		"/instance/v1/zones/fr-par-1/servers",
 		map[string]any{
-			"name":       "web-1",
-			"public_ips": "bad-type",
-			"public_ip":  "bad-type",
+			"name":      "web-1",
+			"public_ip": "bad-type",
 		},
 	)
 	require.Equal(t, 200, status)
@@ -431,6 +433,27 @@ func TestUpdateServerPublicIPsRejectsNonIDs(t *testing.T) {
 		assert.Contains(t, body["message"], "public_ips", name)
 		assertServerPublicIPs(t, ts, serverID, a)
 	}
+}
+
+// Read as an empty list, a malformed public_ips would create a server
+// without the IPs it asked for.
+func TestCreateServerRejectsNonIDPublicIPs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a := newPublicIP(t, ts)
+	for name, publicIPs := range map[string]any{
+		"objects GET answers": []any{map[string]any{"id": a["id"]}},
+		"empty ID":            []any{""},
+		"not a list":          "bad-type",
+	} {
+		status, body := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{"name": "web", "public_ips": publicIPs})
+		assert.Equal(t, http.StatusBadRequest, status, name)
+		assert.Contains(t, body["message"], "public_ips", name)
+	}
+	status, body := testutil.DoList(t, ts, instanceZone+"/servers")
+	require.Equal(t, http.StatusOK, status)
+	assert.Empty(t, body["servers"], "a rejected create leaves no server")
 }
 
 func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {
