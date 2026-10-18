@@ -581,6 +581,37 @@ func (r *Repository) migrate() error {
 				`ALTER TABLE iam_group_members_new RENAME TO iam_group_members`,
 			},
 		},
+		{
+			// The order an IP was bound to its server in, which is the
+			// order the server's public_ips read back in (see bindIP).
+			// Added here, not in CREATE TABLE, so new and old DBs share
+			// one path.
+			//
+			// Older mockway kept that order only in the server's stored
+			// public_ips, so a bound IP takes its position in that list
+			// (1..length). An entry is an object, as CreateServer
+			// stored it, or a plain ID, as UpdateServer stored a PATCH's. An IP bound later through PATCH /ips is
+			// missing from that stale copy; it takes the list's length
+			// plus its rowid, after every listed position, in creation
+			// order. The copies are then dropped: every read builds them
+			// (see withPublicIPs), and writers that keep the blob as
+			// they found it would carry them forward.
+			version: 2,
+			stmts: []string{
+				`ALTER TABLE instance_ips ADD COLUMN bind_seq INTEGER`,
+				`UPDATE instance_ips SET bind_seq = COALESCE(
+					(SELECT j.key + 1
+						FROM instance_servers s, json_each(s.data, '$.public_ips') j
+						WHERE s.id = instance_ips.server_id
+							AND (j.type = 'object' AND json_extract(j.value, '$.id') = instance_ips.id
+								OR j.type = 'text' AND j.value = instance_ips.id)),
+					(SELECT COALESCE(json_array_length(s.data, '$.public_ips'), 0)
+						FROM instance_servers s
+						WHERE s.id = instance_ips.server_id) + rowid)
+				WHERE server_id IS NOT NULL`,
+				`UPDATE instance_servers SET data = json_remove(data, '$.public_ips', '$.public_ip')`,
+			},
+		},
 	}
 
 	for _, m := range migrations {
@@ -589,23 +620,44 @@ func (r *Repository) migrate() error {
 		if applied == 1 {
 			continue
 		}
-		// Disable FK checks during table recreation to avoid constraint errors
-		// while the _new tables are being populated.
-		if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
-			return fmt.Errorf("migration %d: disable FK: %w", m.version, err)
+		if err := r.runMigration(m.version, m.stmts); err != nil {
+			return err
 		}
-		for _, stmt := range m.stmts {
-			if _, err := r.db.Exec(stmt); err != nil {
-				_, _ = r.db.Exec(`PRAGMA foreign_keys = ON`)
-				return fmt.Errorf("migration %d: %w", m.version, err)
-			}
+	}
+	return nil
+}
+
+// runMigration applies one version's statements and records the version
+// in one transaction, so a failure part-way leaves the version unapplied
+// and the next boot retries it whole instead of tripping on half its DDL
+// ("duplicate column name"). FK checks are off around it, since a PRAGMA
+// is a no-op inside a transaction, so table rebuilds can copy rows across.
+func (r *Repository) runMigration(version int, stmts []string) (err error) {
+	if _, err := r.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("migration %d: disable FK: %w", version, err)
+	}
+	defer func() {
+		if _, fkErr := r.db.Exec(`PRAGMA foreign_keys = ON`); fkErr != nil && err == nil {
+			err = fmt.Errorf("migration %d: re-enable FK: %w", version, fkErr)
 		}
-		if _, err := r.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-			return fmt.Errorf("migration %d: re-enable FK: %w", m.version, err)
+	}()
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("migration %d: %w", version, err)
+	}
+	// Runs before the FK re-enable above: one connection (openDB), so the
+	// transaction must let go of it first.
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("migration %d: %w", version, err)
 		}
-		if _, err := r.db.Exec(`INSERT INTO schema_versions (version) VALUES (?)`, m.version); err != nil {
-			return fmt.Errorf("migration %d: record version: %w", m.version, err)
-		}
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_versions (version) VALUES (?)`, version); err != nil {
+		return fmt.Errorf("migration %d: record version: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration %d: commit: %w", version, err)
 	}
 	return nil
 }
@@ -1436,33 +1488,13 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	data["state"] = "stopped"
 	data["creation_date"] = now
 	data["modification_date"] = now
-	var resolvedIPs []any
-	if rawIPs, ok := data["public_ips"].([]any); ok {
-		for _, raw := range rawIPs {
-			if ipID, ok := raw.(string); ok && ipID != "" {
-				ipRec, err := r.GetIP(ipID)
-				if err != nil {
-					return nil, models.ErrNotFound
-				}
-				// Reject if the IP is already attached to another server.
-				if ipRec["server"] != nil {
-					return nil, models.ErrConflict
-				}
-				resolvedIPs = append(resolvedIPs, map[string]any{
-					"id":      ipID,
-					"address": ipRec["address"],
-					"dynamic": false,
-				})
-			}
-		}
+	ipIDs, err := r.bindableIPs("", data["public_ips"])
+	if err != nil {
+		return nil, err
 	}
-	if len(resolvedIPs) > 0 {
-		data["public_ips"] = resolvedIPs
-		data["public_ip"] = resolvedIPs[0]
-	} else {
-		data["public_ips"] = []any{}
-		data["public_ip"] = nil
-	}
+	// Not stored: every read builds them from the IPs' binding (see withPublicIPs).
+	delete(data, "public_ips")
+	delete(data, "public_ip")
 	serverName, _ := data["name"].(string)
 	serverName = strings.TrimSpace(serverName)
 	if serverName == "" {
@@ -1507,24 +1539,127 @@ func (r *Repository) CreateServer(zone string, data map[string]any) (map[string]
 	}
 	// Attach public IPs to this server in the instance_ips table.
 	serverID := result["id"].(string)
-	if rawIPs, ok := data["public_ips"].([]any); ok {
-		for _, raw := range rawIPs {
-			if ipMap, ok := raw.(map[string]any); ok {
-				if ipID, ok := ipMap["id"].(string); ok && ipID != "" {
-					if _, err := r.UpdateIP(ipID, map[string]any{"server": serverID}); err != nil {
-						return nil, fmt.Errorf("attach public IP %s to server: %w", ipID, err)
-					}
-				}
-			}
+	for _, ipID := range ipIDs {
+		if _, err := r.UpdateIP(ipID, map[string]any{"server": serverID}); err != nil {
+			return nil, fmt.Errorf("attach public IP %s to server: %w", ipID, err)
 		}
 	}
-	return result, nil
+	return r.withPublicIPs(result)
 }
+
+// bindableIPs reads the IP IDs a server request lists in public_ips, in
+// order, and checks each exists (404) and is not bound to a server
+// other than serverID (409; serverID is "" for a server being created).
+// null lists none. Anything but a list of IP IDs (e.g. the objects GET
+// answers) is a 400: read as an empty list, it would create a server
+// without its IPs, or detach every IP on a PATCH.
+func (r *Repository) bindableIPs(serverID string, raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, &models.InvalidArgumentError{Message: "public_ips must be a list of IP IDs"}
+	}
+	var ipIDs []string
+	for i, v := range list {
+		ipID, ok := v.(string)
+		if !ok || ipID == "" {
+			return nil, &models.InvalidArgumentError{Message: fmt.Sprintf("public_ips[%d] must be an IP ID", i)}
+		}
+		ip, err := r.GetIP(ipID)
+		if err != nil {
+			return nil, models.ErrNotFound
+		}
+		if bound, ok := ip["server"].(map[string]any); ok && bound["id"] != serverID {
+			return nil, models.ErrConflict
+		}
+		ipIDs = append(ipIDs, ipID)
+	}
+	return ipIDs, nil
+}
+
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// bindIP points an IP at a server ("" detaches) and stamps bind_seq,
+// the order a server's public_ips read back in: the order requested at
+// create, then the order attached afterwards. An IP rebound to the
+// server it is already on keeps its place.
+func bindIP(db execer, ipID, serverID string) error {
+	var serverIDArg any
+	if serverID != "" {
+		serverIDArg = serverID // NULL, not "", or the FK rejects it
+	}
+	_, err := db.Exec(`UPDATE instance_ips SET
+		bind_seq = CASE
+			WHEN ?1 IS NULL THEN NULL
+			WHEN server_id IS ?1 AND bind_seq IS NOT NULL THEN bind_seq
+			ELSE (SELECT COALESCE(MAX(bind_seq), 0) + 1 FROM instance_ips) END,
+		server_id = ?1
+		WHERE id = ?2`, serverIDArg, ipID)
+	return mapInsertSQLError(err)
+}
+
+// withPublicIPs sets a server's public_ips and public_ip from the IPs
+// bound to it. The binding lives only in instance_ips (see ipSelect and
+// bindIP), so an IP attached, detached or deleted after the server was
+// created shows on the next read: a copy in the server's blob went
+// stale and the provider re-planned ip_id.
+func (r *Repository) withPublicIPs(server map[string]any) (map[string]any, error) {
+	rows, err := r.db.Query(
+		`SELECT id, json_extract(data, '$.address') FROM instance_ips WHERE server_id = ? ORDER BY bind_seq, rowid`,
+		server["id"],
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ips := []any{}
+	for rows.Next() {
+		var id string
+		var address sql.NullString
+		if err := rows.Scan(&id, &address); err != nil {
+			return nil, err
+		}
+		ips = append(ips, map[string]any{"id": id, "address": address.String, "dynamic": false})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	server["public_ips"] = ips
+	server["public_ip"] = nil
+	if len(ips) > 0 {
+		server["public_ip"] = ips[0]
+	}
+	return server, nil
+}
+
 func (r *Repository) GetServer(id string) (map[string]any, error) {
-	return r.getJSONByID("instance_servers", "id", id)
+	server, err := r.getJSONByID("instance_servers", "id", id)
+	if err != nil {
+		return nil, err
+	}
+	return r.withPublicIPs(server)
 }
+
+// ListServers lists one zone's servers, or every zone's when zone is "".
 func (r *Repository) ListServers(zone string) ([]map[string]any, error) {
-	return r.listJSON("instance_servers", "zone", zone)
+	col := "zone"
+	if zone == "" {
+		col = ""
+	}
+	servers, err := r.listJSON("instance_servers", col, zone)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range servers {
+		if _, err := r.withPublicIPs(s); err != nil {
+			return nil, err
+		}
+	}
+	return servers, nil
 }
 func (r *Repository) DeleteServer(id string) error {
 	tx, err := r.db.Begin()
@@ -1765,7 +1900,14 @@ func (r *Repository) CreateIP(zone string, data map[string]any) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	return r.GetIP(created["id"].(string))
+	ipID := created["id"].(string)
+	if serverID != "" {
+		// The insert's FK checked the server; this stamps the bind order.
+		if err := bindIP(r.db, ipID, serverID); err != nil {
+			return nil, err
+		}
+	}
+	return r.GetIP(ipID)
 }
 func (r *Repository) GetIP(id string) (map[string]any, error) {
 	ip, err := scanIP(r.db.QueryRow(ipSelect+` WHERE i.id = ?`, id).Scan)
@@ -3200,8 +3342,16 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	// A PATCH's public_ips replaces the server's IPs (UpdateServerRequest.PublicIPs).
+	ipIDs, err := r.bindableIPs(id, patch["public_ips"])
+	if err != nil {
+		return nil, err
+	}
+	rebindIPs := patch["public_ips"] != nil
 	next := patchMerge(current, patch, "id")
 	next["modification_date"] = nowRFC3339()
+	delete(next, "public_ips") // built on read; see withPublicIPs
+	delete(next, "public_ip")
 
 	// Reconcile security_group and security_group_id so that both JSON fields
 	// and the SQL FK column stay consistent after a patch.
@@ -3266,14 +3416,41 @@ func (r *Repository) UpdateServer(id string, patch map[string]any) (map[string]a
 			sgIDArg = sgID
 		}
 	}
-	_, err = r.db.Exec(
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(
 		`UPDATE instance_servers SET data = ?, security_group_id = ? WHERE id = ?`,
 		b, sgIDArg, id,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, mapInsertSQLError(err)
 	}
-	return next, nil
+	if rebindIPs {
+		if err := rebindServerIPs(tx, id, ipIDs); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r.withPublicIPs(next)
+}
+
+// rebindServerIPs makes ipIDs, in that order, the server's IPs: its
+// others are detached, and all are rebound fresh so public_ips reads
+// back in the order the request listed them.
+func rebindServerIPs(tx execer, serverID string, ipIDs []string) error {
+	if _, err := tx.Exec(`UPDATE instance_ips SET server_id = NULL, bind_seq = NULL WHERE server_id = ?`, serverID); err != nil {
+		return err
+	}
+	for _, ipID := range ipIDs {
+		if err := bindIP(tx, ipID, serverID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, error) {
@@ -3287,16 +3464,20 @@ func (r *Repository) UpdateIP(id string, patch map[string]any) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	q, args := `UPDATE instance_ips SET data = ? WHERE id = ?`, []any{b, id}
-	if rebind {
-		// `server: null` detaches: store NULL, not "", or the FK rejects it.
-		var serverIDArg any
-		if serverID != "" {
-			serverIDArg = serverID
-		}
-		q, args = `UPDATE instance_ips SET data = ?, server_id = ? WHERE id = ?`, []any{b, serverIDArg, id}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
 	}
-	if _, err := r.db.Exec(q, args...); err != nil {
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE instance_ips SET data = ? WHERE id = ?`, b, id); err != nil {
+		return nil, mapInsertSQLError(err)
+	}
+	if rebind {
+		if err := bindIP(tx, id, serverID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, mapInsertSQLError(err)
 	}
 	return r.GetIP(id)
@@ -4558,7 +4739,7 @@ func (r *Repository) DeleteRegistryNamespace(id string) error {
 }
 
 func (r *Repository) FullState() (map[string]any, error) {
-	servers, err := r.listJSON("instance_servers", "", "")
+	servers, err := r.ListServers("")
 	if err != nil {
 		return nil, err
 	}
@@ -4796,7 +4977,7 @@ func (r *Repository) FullState() (map[string]any, error) {
 func (r *Repository) ServiceState(service string) (map[string]any, error) {
 	switch service {
 	case "instance":
-		servers, err := r.listJSON("instance_servers", "", "")
+		servers, err := r.ListServers("")
 		if err != nil {
 			return nil, err
 		}

@@ -98,14 +98,14 @@ Per-type tables with a JSON `data` blob for full resource data, plus extracted F
 - `dns_zones` — keyed by `dns_zone` (e.g. `app.example.com`), indexed by `domain`
 - `marketplace_labels` — persists custom image labels added via `AddMarketplaceLabel()` (unused since unknown labels now return empty; retained for backward compat with `--db` files)
 
-**Migration system**: `migrate()` runs versioned DDL via create-new/copy/drop/rename to handle existing file DBs (`--db`). `CREATE TABLE IF NOT EXISTS` is a no-op on existing tables — schema changes require migrations.
+**Migration system**: `migrate()` runs versioned DDL via create-new/copy/drop/rename (or `ADD COLUMN` plus a backfill) to handle existing file DBs (`--db`). `runMigration` applies each version's statements and records the version in one transaction, so a version that fails part-way is retried whole on the next boot. `CREATE TABLE IF NOT EXISTS` is a no-op on existing tables — schema changes require migrations.
 
 ## Server-Generated Fields on Create
 
 | Resource | Fields Injected |
 |----------|-----------------|
 | All UUID-based | `"id": "<uuid>"` |
-| Instance servers | `"state": "stopped"`, `"creation_date"`, `"modification_date"` (RFC3339) |
+| Instance servers | `"state": "stopped"`, `"creation_date"`, `"modification_date"` (RFC3339); `"public_ips"` / `"public_ip"` built on every read from the IPs' `server_id` column, in bind order (`bind_seq`: the order requested, then the order attached), so an IP attached or detached after create (`PATCH /ips/{id} {server}`, how the provider moves `ip_id`) shows on the server; a server PATCH's `public_ips` replaces its IPs in the order listed. On create or PATCH, `public_ips` must be a list of IP IDs: anything else, such as the objects GET answers, is 400 |
 | Instance IPs | `"address": "51.15.<random>.x"`; `"server": {"id","name"}` or `null`, built on every read from the `server_id` column (no flat `server_id` on the wire) |
 | Load balancers | `"status": "ready"`, `"ip": [{"id":"<uuid>","ip_address":"51.15.x.x","lb_id":"<id>"}]` |
 | K8s clusters/pools | `"status": "ready"`, `"created_at"`, `"updated_at"` |

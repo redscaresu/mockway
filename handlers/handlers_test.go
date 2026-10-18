@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/redscaresu/mockway/testutil"
@@ -211,6 +212,9 @@ func TestCreateServerNormalizesImageUUIDToObject(t *testing.T) {
 	require.Equal(t, imageID, image["name"])
 }
 
+// public_ip is built on read, so whatever a create sends is overridden.
+// A malformed public_ips is a 400 instead (TestCreateServerRejectsNonIDPublicIPs):
+// it names the IPs to bind.
 func TestCreateServerOverridesMalformedPublicIPFields(t *testing.T) {
 	ts, cleanup := testutil.NewTestServer(t)
 	defer cleanup()
@@ -218,9 +222,8 @@ func TestCreateServerOverridesMalformedPublicIPFields(t *testing.T) {
 	status, body := testutil.DoCreate(t, ts,
 		"/instance/v1/zones/fr-par-1/servers",
 		map[string]any{
-			"name":       "web-1",
-			"public_ips": "bad-type",
-			"public_ip":  "bad-type",
+			"name":      "web-1",
+			"public_ip": "bad-type",
 		},
 	)
 	require.Equal(t, 200, status)
@@ -265,6 +268,192 @@ func TestCreateServerResolvesPublicIPFromIPsTable(t *testing.T) {
 	pubIPs, ok := server["public_ips"].([]any)
 	require.True(t, ok)
 	require.Len(t, pubIPs, 1)
+}
+
+const instanceZone = "/instance/v1/zones/fr-par-1"
+
+// newPublicIP creates an IP and returns it as a server's public_ips entry.
+func newPublicIP(t *testing.T, ts *httptest.Server) map[string]any {
+	t.Helper()
+	status, body := testutil.DoCreate(t, ts, instanceZone+"/ips", map[string]any{})
+	require.Equal(t, http.StatusOK, status)
+	ip := unwrapInstanceResource(body)
+	return map[string]any{"id": ip["id"], "address": ip["address"], "dynamic": false}
+}
+
+// assertServerPublicIPs checks GET and list answer want, in order, as
+// the server's public_ips, and want[0] as its public_ip. The server
+// must be the only one.
+func assertServerPublicIPs(t *testing.T, ts *httptest.Server, serverID string, want ...map[string]any) {
+	t.Helper()
+	wantIPs := []any{}
+	var wantIP any
+	for _, ip := range want {
+		wantIPs = append(wantIPs, ip)
+	}
+	if len(want) > 0 {
+		wantIP = want[0]
+	}
+	status, body := testutil.DoGet(t, ts, instanceZone+"/servers/"+serverID)
+	require.Equal(t, http.StatusOK, status)
+	server := unwrapInstanceResource(body)
+	assert.Equal(t, wantIPs, server["public_ips"])
+	assert.Equal(t, wantIP, server["public_ip"])
+
+	status, body = testutil.DoList(t, ts, instanceZone+"/servers")
+	require.Equal(t, http.StatusOK, status)
+	listed := body["servers"].([]any)[0].(map[string]any)
+	assert.Equal(t, wantIPs, listed["public_ips"], "list answers what get does")
+	assert.Equal(t, wantIP, listed["public_ip"], "list answers what get does")
+}
+
+// The provider moves a server's ip_id by PATCHing the IPs, never the
+// server, so the server's public_ips must follow the IPs' binding.
+func TestServerPublicIPsFollowIPAttachAfterCreate(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	status, created := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{"name": "web"})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+	a, b := newPublicIP(t, ts), newPublicIP(t, ts)
+	attach := func(ip map[string]any, server any) {
+		status, _ := testutil.DoPatch(t, ts, instanceZone+"/ips/"+ip["id"].(string), map[string]any{"server": server})
+		require.Equal(t, http.StatusOK, status)
+	}
+
+	assertServerPublicIPs(t, ts, serverID)
+	attach(a, serverID)
+	assertServerPublicIPs(t, ts, serverID, a)
+
+	// ip_id a -> b: the provider detaches a, then attaches b.
+	attach(a, nil)
+	assertServerPublicIPs(t, ts, serverID)
+	attach(b, serverID)
+	assertServerPublicIPs(t, ts, serverID, b)
+
+	// Attached later, a comes after b, whatever order they were created in.
+	attach(a, serverID)
+	assertServerPublicIPs(t, ts, serverID, b, a)
+
+	require.Equal(t, http.StatusNoContent, testutil.DoDelete(t, ts, instanceZone+"/ips/"+b["id"].(string)))
+	assertServerPublicIPs(t, ts, serverID, a)
+}
+
+// ip_ids is a list, so public_ips must read back in the order the
+// server was created with, not the order the IPs were created in.
+func TestServerPublicIPsKeepRequestedOrder(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a, b := newPublicIP(t, ts), newPublicIP(t, ts)
+	status, created := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{
+		"name": "web", "public_ips": []any{b["id"], a["id"]},
+	})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+	assert.Equal(t, []any{b, a}, unwrapInstanceResource(created)["public_ips"])
+	assertServerPublicIPs(t, ts, serverID, b, a)
+}
+
+// A server PATCH's public_ips (UpdateServerRequest.PublicIPs) replaces
+// the server's IPs, in the order listed.
+func TestUpdateServerPublicIPsRebinds(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a, b, c := newPublicIP(t, ts), newPublicIP(t, ts), newPublicIP(t, ts)
+	status, created := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{
+		"name": "web", "public_ips": []any{a["id"]},
+	})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+	patchIPs := func(ids ...any) (int, map[string]any) {
+		return testutil.DoPatch(t, ts, instanceZone+"/servers/"+serverID, map[string]any{"public_ips": append([]any{}, ids...)})
+	}
+	ipServer := func(ip map[string]any) any {
+		status, body := testutil.DoGet(t, ts, instanceZone+"/ips/"+ip["id"].(string))
+		require.Equal(t, http.StatusOK, status)
+		return unwrapInstanceResource(body)["server"]
+	}
+
+	status, patched := patchIPs(b["id"], a["id"])
+	require.Equal(t, http.StatusOK, status)
+	assert.Equal(t, []any{b, a}, unwrapInstanceResource(patched)["public_ips"])
+	assertServerPublicIPs(t, ts, serverID, b, a)
+
+	status, _ = patchIPs(b["id"])
+	require.Equal(t, http.StatusOK, status)
+	assertServerPublicIPs(t, ts, serverID, b)
+	assert.Nil(t, ipServer(a), "an IP left out of the list is detached")
+
+	// A PATCH without public_ips leaves the IPs alone.
+	status, _ = testutil.DoPatch(t, ts, instanceZone+"/servers/"+serverID, map[string]any{"name": "web-2"})
+	require.Equal(t, http.StatusOK, status)
+	assertServerPublicIPs(t, ts, serverID, b)
+
+	// An unknown IP, or one bound to another server, changes nothing.
+	status, _ = patchIPs("00000000-0000-0000-0000-000000000000")
+	assert.Equal(t, http.StatusNotFound, status)
+	status, _ = testutil.DoPatch(t, ts, instanceZone+"/ips/"+c["id"].(string), map[string]any{"server": serverID})
+	require.Equal(t, http.StatusOK, status)
+	status, other := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{"name": "other"})
+	require.Equal(t, http.StatusOK, status)
+	status, _ = testutil.DoPatch(t, ts, instanceZone+"/servers/"+resourceID(other), map[string]any{"public_ips": []any{b["id"]}})
+	assert.Equal(t, http.StatusConflict, status)
+	assert.Equal(t, map[string]any{"id": serverID, "name": "web-2"}, ipServer(b))
+
+	status, _ = patchIPs()
+	require.Equal(t, http.StatusOK, status)
+	assert.Nil(t, ipServer(b))
+	assert.Nil(t, ipServer(c))
+}
+
+// A server PATCH's public_ips replaces the server's IPs, so anything
+// but a list of IP IDs is rejected, not read as an empty list that
+// detaches them all. The objects GET answers are the likeliest mistake.
+func TestUpdateServerPublicIPsRejectsNonIDs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a := newPublicIP(t, ts)
+	status, created := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{
+		"name": "web", "public_ips": []any{a["id"]},
+	})
+	require.Equal(t, http.StatusOK, status)
+	serverID := resourceID(created)
+
+	for name, publicIPs := range map[string]any{
+		"objects GET answers": []any{a},
+		"empty ID":            []any{""},
+		"not a list":          a["id"],
+	} {
+		status, body := testutil.DoPatch(t, ts, instanceZone+"/servers/"+serverID, map[string]any{"public_ips": publicIPs})
+		assert.Equal(t, http.StatusBadRequest, status, name)
+		assert.Contains(t, body["message"], "public_ips", name)
+		assertServerPublicIPs(t, ts, serverID, a)
+	}
+}
+
+// Read as an empty list, a malformed public_ips would create a server
+// without the IPs it asked for.
+func TestCreateServerRejectsNonIDPublicIPs(t *testing.T) {
+	ts, cleanup := testutil.NewTestServer(t)
+	defer cleanup()
+
+	a := newPublicIP(t, ts)
+	for name, publicIPs := range map[string]any{
+		"objects GET answers": []any{map[string]any{"id": a["id"]}},
+		"empty ID":            []any{""},
+		"not a list":          "bad-type",
+	} {
+		status, body := testutil.DoCreate(t, ts, instanceZone+"/servers", map[string]any{"name": "web", "public_ips": publicIPs})
+		assert.Equal(t, http.StatusBadRequest, status, name)
+		assert.Contains(t, body["message"], "public_ips", name)
+	}
+	status, body := testutil.DoList(t, ts, instanceZone+"/servers")
+	require.Equal(t, http.StatusOK, status)
+	assert.Empty(t, body["servers"], "a rejected create leaves no server")
 }
 
 func TestCreateServerInjectsDefaultRootVolume(t *testing.T) {

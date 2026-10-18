@@ -17,6 +17,12 @@ var (
 // working unchanged.
 const DefaultProjectID = "00000000-0000-0000-0000-000000000000"
 
+// InvalidArgumentError reports a request field the API rejects, as a
+// 400. Message names the field.
+type InvalidArgumentError struct{ Message string }
+
+func (e *InvalidArgumentError) Error() string { return e.Message }
+
 // ProjectNotEmptyError reports an attempt to delete a project that still
 // owns resources. Real Scaleway refuses this, and mirroring the refusal
 // is the point: it turns a bad destroy ordering into a Layer 2 failure
